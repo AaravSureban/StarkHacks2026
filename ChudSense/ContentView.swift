@@ -61,6 +61,8 @@ struct ContentView: View {
                 statusRow(label: "Camera Status", value: cameraManager.cameraStatusText)
                 statusRow(label: "Frame Status", value: cameraManager.frameStatusText)
                 statusRow(label: "Latest Frame", value: cameraManager.latestFrameText)
+                statusRow(label: "Sampled Frames", value: cameraManager.sampledFrameCountText)
+                statusRow(label: "Processor Status", value: cameraManager.frameProcessor.pipelineStatusText)
 
                 ZStack {
                     if cameraManager.isSessionRunning {
@@ -135,7 +137,11 @@ struct ContentView: View {
             "",
             "camera.permission=\(cameraManager.authorizationState.description)",
             "camera.status=\(cameraManager.cameraStatusText)",
-            "camera.frames=\(cameraManager.frameStatusText)"
+            "camera.frames=\(cameraManager.frameStatusText)",
+            "camera.sampledFrames=\(cameraManager.sampledFrameCountText)",
+            "processor.lastFrame=\(cameraManager.frameProcessor.lastProcessedFrameText)",
+            "processor.lastTimestamp=\(cameraManager.frameProcessor.lastProcessedTimestampText)",
+            "processor.callback=\(cameraManager.frameProcessor.placeholderCallbackText)"
         ].joined(separator: "\n")
     }
 

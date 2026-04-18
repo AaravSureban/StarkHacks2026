@@ -11,6 +11,10 @@ enum AppConfig {
         static let cameraControlSpacing: CGFloat = 10
     }
 
+    enum Camera {
+        static let sampleEveryNFrames = 15
+    }
+
     enum Colors {
         static let screenBackground = Color(.systemGroupedBackground)
         static let cardBackground = Color(.secondarySystemGroupedBackground)
@@ -27,6 +31,6 @@ enum AppConfig {
         static let homeTitle = "iPhone Compute Shell"
         static let homeSubtitle = "Foundation UI for camera, perception, and BLE modules."
         static let cameraPlaceholderTitle = "Live Camera Preview"
-        static let cameraPlaceholderBody = "This milestone only brings up the preview and frame pipeline."
+        static let cameraPlaceholderBody = "This milestone brings up preview plus a sampled frame-processing skeleton."
     }
 }

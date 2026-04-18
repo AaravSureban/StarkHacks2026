@@ -38,3 +38,14 @@ capture-session wrapper:
 - `CameraManager` owns permissions, session configuration, and frame reception.
 - `CameraPreviewView` displays the live `AVCaptureSession` inside SwiftUI.
 - The frame delegate is active, but no Vision or Core ML inference runs yet.
+
+## Frame Processing Skeleton
+
+The current processing milestone adds a lightweight layer between capture and
+future inference:
+
+- `CameraManager` receives every camera frame and samples them at a fixed rate.
+- `FrameProcessor` accepts sampled frame metadata through a placeholder callback.
+- The UI shows sampled frame count and latest processing timestamps for debug
+  visibility.
+- This keeps the capture layer separate from future Vision and Core ML logic.

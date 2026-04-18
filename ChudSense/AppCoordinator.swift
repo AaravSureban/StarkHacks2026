@@ -12,8 +12,8 @@ final class AppCoordinator: ObservableObject {
 
     @Published private(set) var currentMode: Mode = .idle
     @Published private(set) var debugLines: [String] = [
-        "Milestone 1.1 initialized.",
-        "Camera module: pending.",
+        "Milestone 1.3 initialized.",
+        "Camera module: live preview and sampled frame pipeline ready.",
         "Detection module: pending.",
         "BLE module: pending."
     ]

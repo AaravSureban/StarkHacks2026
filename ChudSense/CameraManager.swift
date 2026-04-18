@@ -31,18 +31,22 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var cameraStatusText = "Camera not started"
     @Published private(set) var frameStatusText = "Frame pipeline idle"
     @Published private(set) var latestFrameText = "No frames received"
+    @Published private(set) var sampledFrameCountText = "0"
     @Published private(set) var isSessionRunning = false
     @Published private(set) var previewAspectRatio: CGFloat = 3.0 / 4.0
 
     let session = AVCaptureSession()
+    let frameProcessor: FrameProcessor
 
     private let sessionQueue = DispatchQueue(label: "chudsense.camera.session")
     private let outputQueue = DispatchQueue(label: "chudsense.camera.output")
     private let videoOutput = AVCaptureVideoDataOutput()
     private var isConfigured = false
     private var frameCount = 0
+    private var sampledFrameCount = 0
 
-    override init() {
+    init(frameProcessor: FrameProcessor = FrameProcessor()) {
+        self.frameProcessor = frameProcessor
         super.init()
         refreshAuthorizationStatus()
     }
@@ -109,6 +113,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.isSessionRunning = false
                 self.cameraStatusText = "Camera stopped"
                 self.frameStatusText = "Frame pipeline idle"
+                self.sampledFrameCountText = "\(self.sampledFrameCount)"
             }
         }
     }
@@ -199,6 +204,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.previewAspectRatio = portraitWidth / portraitHeight
                 self.frameStatusText = "Frame pipeline ready"
                 self.latestFrameText = "No frames received"
+                self.sampledFrameCountText = "0"
             }
 
             isConfigured = true
@@ -239,12 +245,36 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         let width = CVPixelBufferGetWidth(imageBuffer)
         let height = CVPixelBufferGetHeight(imageBuffer)
+        let dimensionsText = "\(width) x \(height) px"
 
         if frameCount == 1 || frameCount.isMultiple(of: 15) {
             DispatchQueue.main.async {
                 self.frameStatusText = "Receiving live frames"
-                self.latestFrameText = "\(width) x \(height) px"
+                self.latestFrameText = dimensionsText
             }
         }
+
+        guard shouldProcessCurrentFrame() else {
+            return
+        }
+
+        sampledFrameCount += 1
+
+        let snapshot = FrameProcessingSnapshot(
+            frameNumber: frameCount,
+            timestamp: Date(),
+            dimensionsText: dimensionsText
+        )
+
+        frameProcessor.processFrame(snapshot)
+
+        DispatchQueue.main.async {
+            self.sampledFrameCountText = "\(self.sampledFrameCount)"
+            self.frameStatusText = "Processing sampled frames"
+        }
+    }
+
+    private func shouldProcessCurrentFrame() -> Bool {
+        frameCount == 1 || frameCount.isMultiple(of: AppConfig.Camera.sampleEveryNFrames)
     }
 }
