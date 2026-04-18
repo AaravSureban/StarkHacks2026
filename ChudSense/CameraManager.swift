@@ -263,7 +263,8 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         let snapshot = FrameProcessingSnapshot(
             frameNumber: frameCount,
             timestamp: Date(),
-            dimensionsText: dimensionsText
+            dimensionsText: dimensionsText,
+            pixelBuffer: imageBuffer
         )
 
         frameProcessor.processFrame(snapshot)

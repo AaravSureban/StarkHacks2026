@@ -17,6 +17,7 @@ enum AppConfig {
 
     enum ObjectDetection {
         static let candidateModelNames = [
+            "YOLO11SmallDetector",
             "YOLOv8n",
             "YOLOv8s",
             "YOLOv5s",
@@ -43,5 +44,6 @@ enum AppConfig {
         static let cameraPlaceholderBody = "This milestone brings up preview plus a sampled frame-processing skeleton."
         static let modelCardTitle = "Object Detection Model"
         static let modelRetryButtonTitle = "Retry Model Load"
+        static let inferenceCardTitle = "Live Inference"
     }
 }

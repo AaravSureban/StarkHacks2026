@@ -6,6 +6,7 @@ struct FrameProcessingSnapshot {
     let frameNumber: Int
     let timestamp: Date
     let dimensionsText: String
+    let pixelBuffer: CVPixelBuffer
 }
 
 protocol FrameProcessing {
@@ -18,9 +19,13 @@ final class FrameProcessor: ObservableObject, FrameProcessing {
     @Published private(set) var lastProcessedTimestampText = "No timestamps yet"
     @Published private(set) var placeholderCallbackText = "Placeholder callback not triggered"
 
+    let objectDetectionManager: ObjectDetectionManager
+
     private let timestampFormatter: DateFormatter
 
-    init() {
+    init(objectDetectionManager: ObjectDetectionManager = ObjectDetectionManager()) {
+        self.objectDetectionManager = objectDetectionManager
+
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .medium
@@ -32,10 +37,12 @@ final class FrameProcessor: ObservableObject, FrameProcessing {
         let timestampText = timestampFormatter.string(from: snapshot.timestamp)
 
         DispatchQueue.main.async {
-            self.pipelineStatusText = "Placeholder processor active"
+            self.pipelineStatusText = "Sampled frame received"
             self.lastProcessedFrameText = "Frame \(snapshot.frameNumber) at \(snapshot.dimensionsText)"
             self.lastProcessedTimestampText = timestampText
-            self.placeholderCallbackText = "Received sampled frame \(snapshot.frameNumber)"
+            self.placeholderCallbackText = "Forwarded frame \(snapshot.frameNumber) to detector"
         }
+
+        objectDetectionManager.processFrame(snapshot)
     }
 }

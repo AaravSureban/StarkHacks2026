@@ -60,3 +60,14 @@ live inference yet:
 - If no model is present, the app reports a clean failure state in the UI.
 - Camera capture remains separate from model loading so inference can be added
   in the next milestone without rewriting the camera layer.
+
+## Live Detection Pipeline
+
+The current detection milestone connects sampled camera frames to Vision/Core ML:
+
+- `CameraManager` continues to own capture and frame sampling only.
+- `FrameProcessor` forwards sampled frames to the detection layer.
+- `ObjectDetectionManager` runs `VNCoreMLRequest` on sampled frames and reports
+  detection counts plus the top result in the debug UI.
+- Inference is intentionally modest because it only runs on sampled frames, not
+  every camera frame.
