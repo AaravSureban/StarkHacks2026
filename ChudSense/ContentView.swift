@@ -3,12 +3,14 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var coordinator: AppCoordinator
     @StateObject private var cameraManager = CameraManager()
+    @StateObject private var objectDetectionManager = ObjectDetectionManager()
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: AppConfig.Layout.sectionSpacing) {
                     headerCard
+                    modelCard
                     cameraCard
                     debugPanelCard
                 }
@@ -18,6 +20,7 @@ struct ContentView: View {
             .navigationTitle(AppConfig.Copy.appTitle)
             .onAppear {
                 cameraManager.refreshAuthorizationStatus()
+                objectDetectionManager.loadModel()
             }
         }
     }
@@ -110,6 +113,27 @@ struct ContentView: View {
         }
     }
 
+    private var modelCard: some View {
+        infoCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(AppConfig.Copy.modelCardTitle)
+                    .font(.headline)
+
+                statusRow(label: "Load Status", value: objectDetectionManager.modelStatusText)
+                statusRow(label: "Loaded Model", value: objectDetectionManager.loadedModelNameText)
+                statusRow(label: "Details", value: objectDetectionManager.modelDetailsText)
+
+                Button(AppConfig.Copy.modelRetryButtonTitle) {
+                    objectDetectionManager.loadModel()
+                }
+                .buttonStyle(
+                    CameraActionButtonStyle(backgroundColor: AppConfig.Colors.primaryButtonBackground)
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private var debugPanelCard: some View {
         infoCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -139,6 +163,9 @@ struct ContentView: View {
             "camera.status=\(cameraManager.cameraStatusText)",
             "camera.frames=\(cameraManager.frameStatusText)",
             "camera.sampledFrames=\(cameraManager.sampledFrameCountText)",
+            "detector.status=\(objectDetectionManager.modelStatusText)",
+            "detector.model=\(objectDetectionManager.loadedModelNameText)",
+            "detector.details=\(objectDetectionManager.modelDetailsText)",
             "processor.lastFrame=\(cameraManager.frameProcessor.lastProcessedFrameText)",
             "processor.lastTimestamp=\(cameraManager.frameProcessor.lastProcessedTimestampText)",
             "processor.callback=\(cameraManager.frameProcessor.placeholderCallbackText)"

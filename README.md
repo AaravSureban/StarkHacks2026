@@ -49,3 +49,14 @@ future inference:
 - The UI shows sampled frame count and latest processing timestamps for debug
   visibility.
 - This keeps the capture layer separate from future Vision and Core ML logic.
+
+## Object Detection Model Loading
+
+The current detection milestone adds a dedicated model loader without running
+live inference yet:
+
+- `ObjectDetectionManager` searches the app bundle for a configured Core ML model.
+- If a compiled model is present, it initializes a `VNCoreMLModel`.
+- If no model is present, the app reports a clean failure state in the UI.
+- Camera capture remains separate from model loading so inference can be added
+  in the next milestone without rewriting the camera layer.
