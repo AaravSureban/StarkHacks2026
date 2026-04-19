@@ -18,10 +18,11 @@ final class ManualControlViewModel: ObservableObject {
     @Published var sendCountText = "0"
     @Published var sendHistory: [SendHistoryItem] = []
     @Published var lastDirectionText = "None"
-    @Published var lastAlertText = "None"
     @Published var lastIntensityText = "-"
     @Published var lastPatternText = "-"
     @Published var lastPriorityText = "-"
+    @Published var lastTTLText = "-"
+    @Published var lastConfidenceText = "-"
     @Published var connectionModeText = "Mock / Local Only"
     @Published var copyStatusText = "Nothing copied yet"
     @Published var useMockMode = true
@@ -59,10 +60,11 @@ final class ManualControlViewModel: ObservableObject {
         lastCommandColor = command.displayColor
 
         lastDirectionText = message.direction
-        lastAlertText = message.alert
-        lastIntensityText = String(format: "%.1f", message.intensity)
+        lastIntensityText = "\(message.intensity)"
         lastPatternText = message.pattern
         lastPriorityText = "\(message.priority)"
+        lastTTLText = "\(message.ttlMs)"
+        lastConfidenceText = String(format: "%.2f", message.confidence)
 
         let historyItem = SendHistoryItem(
             commandText: command.rawValue,
@@ -90,10 +92,11 @@ final class ManualControlViewModel: ObservableObject {
         sendStatusText = "Ready"
         lastSentTimeText = "Not sent yet"
         lastDirectionText = "None"
-        lastAlertText = "None"
         lastIntensityText = "-"
         lastPatternText = "-"
         lastPriorityText = "-"
+        lastTTLText = "-"
+        lastConfidenceText = "-"
         lastCommandColor = .gray
         copyStatusText = "Nothing copied yet"
         sendCount = 0

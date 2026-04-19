@@ -34,6 +34,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var sampledFrameCountText = "0"
     @Published private(set) var isSessionRunning = false
     @Published private(set) var previewAspectRatio: CGFloat = 3.0 / 4.0
+    @Published private(set) var depthStatusText = "LiDAR depth unavailable"
 
     let session = AVCaptureSession()
     let frameProcessor: FrameProcessor
@@ -41,6 +42,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let sessionQueue = DispatchQueue(label: "chudsense.camera.session")
     private let outputQueue = DispatchQueue(label: "chudsense.camera.output")
     private let videoOutput = AVCaptureVideoDataOutput()
+    private let depthOutput = AVCaptureDepthDataOutput()
+    private var outputSynchronizer: AVCaptureDataOutputSynchronizer?
     private var isConfigured = false
     private var frameCount = 0
     private var sampledFrameCount = 0
@@ -157,14 +160,15 @@ final class CameraManager: NSObject, ObservableObject {
             session.commitConfiguration()
         }
 
-        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        guard let camera = makeCaptureDevice() else {
             DispatchQueue.main.async {
-                self.cameraStatusText = "Back camera not available"
+                self.cameraStatusText = "Back LiDAR camera not available"
             }
             return
         }
 
         do {
+            try configureFormats(for: camera)
             let input = try AVCaptureDeviceInput(device: camera)
 
             guard session.canAddInput(input) else {
@@ -184,7 +188,6 @@ final class CameraManager: NSObject, ObservableObject {
             videoOutput.videoSettings = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             ]
-            videoOutput.setSampleBufferDelegate(self, queue: outputQueue)
 
             guard session.canAddOutput(videoOutput) else {
                 DispatchQueue.main.async {
@@ -195,16 +198,37 @@ final class CameraManager: NSObject, ObservableObject {
 
             session.addOutput(videoOutput)
 
+            depthOutput.isFilteringEnabled = true
+
+            guard session.canAddOutput(depthOutput) else {
+                DispatchQueue.main.async {
+                    self.depthStatusText = "LiDAR depth output unavailable"
+                }
+                return
+            }
+
+            session.addOutput(depthOutput)
+
+            let synchronizer = AVCaptureDataOutputSynchronizer(dataOutputs: [videoOutput, depthOutput])
+            synchronizer.setDelegate(self, queue: outputQueue)
+            outputSynchronizer = synchronizer
+
             if let connection = videoOutput.connection(with: .video),
                connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
             }
 
+            if let depthConnection = depthOutput.connection(with: .depthData),
+               depthConnection.isVideoRotationAngleSupported(90) {
+                depthConnection.videoRotationAngle = 90
+            }
+
             DispatchQueue.main.async {
                 self.previewAspectRatio = portraitWidth / portraitHeight
-                self.frameStatusText = "Frame pipeline ready"
+                self.frameStatusText = "Frame and LiDAR pipeline ready"
                 self.latestFrameText = "No frames received"
                 self.sampledFrameCountText = "0"
+                self.depthStatusText = "LiDAR depth active"
             }
 
             isConfigured = true
@@ -229,15 +253,52 @@ final class CameraManager: NSObject, ObservableObject {
             return .unknown
         }
     }
+
+    private func makeCaptureDevice() -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back)
+    }
+
+    private func configureFormats(for device: AVCaptureDevice) throws {
+        guard let videoFormat = device.formats.first(where: { format in
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let mediaSubType = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+
+            return dimensions.width == AppConfig.Camera.preferredLiDARWidth
+                && mediaSubType == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                && !format.supportedDepthDataFormats.isEmpty
+        }) ?? device.formats.first(where: { !$0.supportedDepthDataFormats.isEmpty }) else {
+            throw CameraConfigurationError.requiredFormatUnavailable
+        }
+
+        guard let depthFormat = videoFormat.supportedDepthDataFormats.first(where: { format in
+            let mediaSubType = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+            return mediaSubType == kCVPixelFormatType_DepthFloat16
+                || mediaSubType == kCVPixelFormatType_DepthFloat32
+        }) else {
+            throw CameraConfigurationError.requiredFormatUnavailable
+        }
+
+        try device.lockForConfiguration()
+        device.activeFormat = videoFormat
+        device.activeDepthDataFormat = depthFormat
+        device.unlockForConfiguration()
+    }
 }
 
-extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
+extension CameraManager: AVCaptureDataOutputSynchronizerDelegate {
+    func dataOutputSynchronizer(
+        _ synchronizer: AVCaptureDataOutputSynchronizer,
+        didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection
     ) {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        guard
+            let synchronizedVideo = synchronizedDataCollection.synchronizedData(for: videoOutput)
+                as? AVCaptureSynchronizedSampleBufferData,
+            let synchronizedDepth = synchronizedDataCollection.synchronizedData(for: depthOutput)
+                as? AVCaptureSynchronizedDepthData,
+            !synchronizedVideo.sampleBufferWasDropped,
+            !synchronizedDepth.depthDataWasDropped,
+            let imageBuffer = CMSampleBufferGetImageBuffer(synchronizedVideo.sampleBuffer)
+        else {
             return
         }
 
@@ -249,8 +310,10 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         if frameCount == 1 || frameCount.isMultiple(of: 15) {
             DispatchQueue.main.async {
-                self.frameStatusText = "Receiving live frames"
-                self.latestFrameText = dimensionsText
+                self.frameStatusText = "Receiving live video + LiDAR frames"
+                let depthDimensions = CVPixelBufferGetWidth(synchronizedDepth.depthData.depthDataMap)
+                let depthHeight = CVPixelBufferGetHeight(synchronizedDepth.depthData.depthDataMap)
+                self.latestFrameText = "\(dimensionsText), depth \(depthDimensions) x \(depthHeight)"
             }
         }
 
@@ -264,18 +327,33 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             frameNumber: frameCount,
             timestamp: Date(),
             dimensionsText: dimensionsText,
-            pixelBuffer: imageBuffer
+            pixelBuffer: imageBuffer,
+            depthData: synchronizedDepth.depthData,
+            // The output connection is already rotated into portrait, so Vision should
+            // treat the sampled buffer as upright instead of applying another rotation.
+            orientation: .up
         )
 
         frameProcessor.processFrame(snapshot)
 
         DispatchQueue.main.async {
             self.sampledFrameCountText = "\(self.sampledFrameCount)"
-            self.frameStatusText = "Processing sampled frames"
+            self.frameStatusText = "Processing sampled LiDAR frames"
         }
     }
 
     private func shouldProcessCurrentFrame() -> Bool {
         frameCount == 1 || frameCount.isMultiple(of: AppConfig.Camera.sampleEveryNFrames)
+    }
+}
+
+private enum CameraConfigurationError: LocalizedError {
+    case requiredFormatUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .requiredFormatUnavailable:
+            return "Required LiDAR video or depth format is unavailable"
+        }
     }
 }

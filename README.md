@@ -71,3 +71,44 @@ The current detection milestone connects sampled camera frames to Vision/Core ML
   detection counts plus the top result in the debug UI.
 - Inference is intentionally modest because it only runs on sampled frames, not
   every camera frame.
+
+## Detection Overlay Rendering
+
+The current overlay milestone adds a dedicated rendering layer on top of the
+camera preview:
+
+- `DetectionOverlayView` renders bounding boxes, labels, and confidence values.
+- `ObjectDetectionManager` publishes normalized overlay data from Vision results.
+- `ContentView` stacks the overlay above the live preview without mixing drawing
+  logic into the model or camera modules.
+
+## Primary Target Selection
+
+The current selection milestone adds a lightweight target selection layer:
+
+- `TargetSelector` chooses one primary target from the current detections.
+- The first implementation selects the highest-confidence detection and breaks
+  ties by larger bounding-box area.
+- The selected target is highlighted in the overlay and summarized in the UI.
+
+## Direction Estimation
+
+The current direction milestone converts the selected target into a coarse
+body-relative direction:
+
+- `DirectionEstimator` maps the selected target's horizontal midpoint into
+  `left`, `front`, or `right`.
+- The first implementation uses screen thirds for a simple, debuggable rule.
+- Direction output is summarized in the UI and debug panel without coupling it
+  to transport or haptic rendering yet.
+
+## Confidence Gating And Smoothing
+
+The current smoothing milestone reduces flicker in target-driven output:
+
+- `DecisionSmoother` ignores low-confidence selections using centralized
+  thresholds in `AppConfig`.
+- It keeps a short direction history and only promotes a direction when enough
+  recent frames agree.
+- The UI shows both the raw direction estimate and the smoothed direction so
+  perception stability can be debugged explicitly.
