@@ -27,6 +27,7 @@ enum AppConfig {
         static let cardPadding: CGFloat = 16
         static let cardCornerRadius: CGFloat = 18
         static let cameraPlaceholderHeight: CGFloat = 260
+        static let dashboardCameraHeight: CGFloat = 400
         static let debugPanelHeight: CGFloat = 180
         static let cameraControlSpacing: CGFloat = 10
     }

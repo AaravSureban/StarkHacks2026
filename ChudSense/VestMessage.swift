@@ -217,6 +217,20 @@ func makeFindAndGoSearchMessage(
     )
 }
 
+func makeFindAndGoScanCompleteMessage(seq: Int) -> VestMessage {
+    VestMessage(
+        mode: "find_scan_complete",
+        direction: "none",
+        intensity: 0,
+        pattern: "none",
+        priority: 1,
+        ttlMs: AppConfig.Decision.commandTTLMilliseconds,
+        confidence: 0.0,
+        distance: nil,
+        seq: seq
+    )
+}
+
 func makeGPSNavigationMessage(
     direction: DirectionEstimator.Direction,
     distanceMeters: Double?,

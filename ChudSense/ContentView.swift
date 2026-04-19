@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @ObservedObject var coordinator: AppCoordinator
@@ -9,6 +10,7 @@ struct ContentView: View {
     @StateObject private var bleVestManager = BLEVestManager()
     @StateObject private var gpsNavigationManager = GPSNavigationManager()
     @State private var isCameraMirrorModeEnabled = false
+    @State private var isFindAndGoTargetCaptureActive = false
 
     private let bleSendTimer = Timer.publish(
         every: AppConfig.BLE.sendTimerIntervalSeconds,
@@ -24,23 +26,20 @@ struct ContentView: View {
                 NavigationStack {
                     ScrollView {
                         VStack(spacing: AppConfig.Layout.sectionSpacing) {
-                            headerCard
+                            primaryDashboardCard
                             if coordinator.currentMode == .findAndGo {
                                 findAndGoControlCard
                             }
                             if coordinator.currentMode == .gpsNavigation {
                                 gpsControlCard
                             }
-                            cameraCard
-                            navigationSummaryCard
-                            liveCommandCard
                             bleConnectionCard
                             diagnosticsCard
                         }
                         .padding(AppConfig.Layout.screenPadding)
                     }
                     .background(AppConfig.Colors.screenBackground.ignoresSafeArea())
-                    .navigationTitle(AppConfig.Copy.appTitle)
+                    .toolbar(.hidden, for: .navigationBar)
                 }
             }
         }
@@ -52,8 +51,13 @@ struct ContentView: View {
             )
             resourceMonitor.startMonitoring()
             cameraManager.frameProcessor.objectDetectionManager.loadModel()
+            cameraManager.frameProcessor.handGestureModeSwitchManager.onModeDetected = { mode in
+                coordinator.setMode(mode)
+            }
+            cameraManager.frameProcessor.handGestureModeSwitchManager.onFindAndGoTargetCaptureGesture = {
+                handleFindAndGoTargetCaptureGesture()
+            }
             updateGPSNavigationLifecycle(for: coordinator.currentMode)
-            startVoiceListening()
         }
         .onDisappear {
             resourceMonitor.stopMonitoring()
@@ -61,6 +65,9 @@ struct ContentView: View {
             gpsNavigationManager.stopNavigation()
         }
         .onChange(of: coordinator.currentMode) { _, newMode in
+            if newMode != .findAndGo {
+                cancelFindAndGoTargetCapture()
+            }
             cameraManager.frameProcessor.objectDetectionManager.setMode(newMode)
             updateGPSNavigationLifecycle(for: newMode)
         }
@@ -70,6 +77,147 @@ struct ContentView: View {
         .onReceive(bleSendTimer) { _ in
             sendLatestBLECommandIfNeeded()
         }
+    }
+
+    private var primaryDashboardCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Mode", selection: modeSelection) {
+                ForEach(AppCoordinator.Mode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            cameraFeed(
+                overlays: selectedOverlayItems,
+                height: AppConfig.Layout.dashboardCameraHeight,
+                showsBadge: true
+            )
+            .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 8)
+
+            dashboardStatusGrid
+            dashboardControlGrid
+        }
+        .padding(AppConfig.Layout.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(dashboardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppConfig.Layout.cardCornerRadius + 6))
+    }
+
+    private var dashboardHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ChudSense Live")
+                    .font(.title2.weight(.bold))
+
+                Text(coordinator.currentMode.summaryText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                modeBadge
+                statusCapsule(cameraManager.depthStatusText, tint: depthStatusColor)
+            }
+        }
+    }
+
+    private var dashboardStatusGrid: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8)
+            ],
+            spacing: 8
+        ) {
+            compactMetricTile(
+                title: "Target",
+                value: currentTargetTitle,
+                subtitle: currentTargetSubtitle,
+                tint: .blue
+            )
+            compactMetricTile(
+                title: "Direction",
+                value: currentDirectionTitle,
+                subtitle: currentDirectionSubtitle,
+                tint: .indigo
+            )
+            compactMetricTile(
+                title: "Urgency",
+                value: currentUrgencyTitle,
+                subtitle: currentUrgencySubtitle,
+                tint: urgencyTint
+            )
+            compactMetricTile(
+                title: "Confidence",
+                value: dashboardConfidenceText,
+                subtitle: cameraManager.frameProcessor.objectDetectionManager.targetSelector.selectionStatusText,
+                tint: .green
+            )
+            compactMetricTile(
+                title: "Usage",
+                value: resourceMonitor.cpuUsageText,
+                subtitle: "RAM \(resourceMonitor.memoryUsageText)",
+                tint: .orange
+            )
+            compactMetricTile(
+                title: "Vest",
+                value: bleVestManager.connectionState.displayText,
+                subtitle: bleVestManager.lastSendStatusText,
+                tint: bleStatusTint
+            )
+        }
+    }
+
+    private var dashboardControlGrid: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            Button(cameraManager.isSessionRunning ? "Stop Camera" : "Start Camera") {
+                if cameraManager.isSessionRunning {
+                    cameraManager.stopSession()
+                } else {
+                    cameraManager.requestPermissionAndStart()
+                }
+            }
+            .buttonStyle(
+                CameraActionButtonStyle(
+                    backgroundColor: cameraManager.isSessionRunning
+                        ? AppConfig.Colors.secondaryButtonBackground
+                        : AppConfig.Colors.primaryButtonBackground
+                )
+            )
+
+            Button(bleVestManager.connectionState == .connected ? "Disconnect Vest" : "Connect Vest") {
+                if bleVestManager.connectionState == .connected {
+                    bleVestManager.disconnect()
+                } else {
+                    bleVestManager.startScanning()
+                }
+            }
+            .buttonStyle(CameraActionButtonStyle(backgroundColor: AppConfig.Colors.primaryButtonBackground))
+            .disabled(bleVestManager.connectionState == .scanning || bleVestManager.connectionState == .connecting)
+
+        }
+    }
+
+    private var dashboardBackground: some ShapeStyle {
+        LinearGradient(
+            colors: [
+                Color(.secondarySystemGroupedBackground),
+                Color(.systemBackground)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var headerCard: some View {
@@ -259,27 +407,32 @@ struct ContentView: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        toggleVoiceInput()
+                        handleFindAndGoTargetCaptureGesture()
                     } label: {
                         Label(
-                            voiceTargetInputManager.isListening ? "Stop Listening" : "Speak Target",
-                            systemImage: voiceTargetInputManager.isListening ? "stop.circle.fill" : "mic.fill"
+                            isFindAndGoTargetCaptureActive ? "Finish Target" : "Record Target",
+                            systemImage: isFindAndGoTargetCaptureActive ? "stop.circle.fill" : "mic.fill"
                         )
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(
                         CameraActionButtonStyle(
-                            backgroundColor: voiceTargetInputManager.isListening ? .red : AppConfig.Colors.primaryButtonBackground
+                            backgroundColor: isFindAndGoTargetCaptureActive ? .red : AppConfig.Colors.primaryButtonBackground
                         )
                     )
 
                     Button("Clear") {
+                        cancelFindAndGoTargetCapture()
                         coordinator.setRequestedFindAndGoTarget("")
                     }
                     .buttonStyle(
                         CameraActionButtonStyle(backgroundColor: AppConfig.Colors.secondaryButtonBackground)
                     )
                 }
+
+                Text("Hand control: show 4 fingers again to start or finish recording the target.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 summaryRow("Speech", voiceTargetInputManager.authorizationStatusText)
                 summaryRow("Voice Status", voiceTargetInputManager.statusText)
@@ -350,18 +503,10 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: AppConfig.Layout.cardCornerRadius)
                     .fill(AppConfig.Colors.cameraPlaceholderBackground)
 
-                VStack(spacing: 10) {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(AppConfig.Colors.cameraPlaceholderTint)
-
+                VStack {
                     Text(AppConfig.Copy.cameraPlaceholderTitle)
                         .font(.headline)
-
-                    Text(AppConfig.Copy.cameraPlaceholderBody)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
                 }
                 .padding()
             }
@@ -668,6 +813,14 @@ struct ContentView: View {
         currentOutgoingCommand.map(makePrettyJSONString) ?? "No live command JSON"
     }
 
+    private var dashboardConfidenceText: String {
+        guard let selectedTarget else {
+            return "--"
+        }
+
+        return "\(Int((selectedTarget.confidence * 100).rounded()))%"
+    }
+
     private var currentOutgoingCommand: VestMessage? {
         let localCommand = cameraManager.frameProcessor.objectDetectionManager.latestLiveCommand
 
@@ -826,26 +979,83 @@ struct ContentView: View {
         }
     }
 
+    private func handleFindAndGoTargetCaptureGesture() {
+        guard coordinator.currentMode == .findAndGo else {
+            return
+        }
+
+        playSingleHapticCue()
+
+        if isFindAndGoTargetCaptureActive {
+            finishFindAndGoTargetCapture()
+        } else {
+            startFindAndGoTargetCapture()
+        }
+    }
+
+    private func startFindAndGoTargetCapture() {
+        coordinator.setRequestedFindAndGoTarget("")
+        isFindAndGoTargetCaptureActive = true
+        voiceTargetInputManager.startContinuousListening(
+            onResolvedTarget: { resolvedTarget in
+                coordinator.setRequestedFindAndGoTarget(resolvedTarget)
+            },
+            onResolvedMode: { _ in
+            }
+        )
+    }
+
+    private func finishFindAndGoTargetCapture() {
+        let resolvedTarget = voiceTargetInputManager.resolvedTargetText
+        let transcriptTarget = AppConfig.ObjectDetection.resolvedTargetLabel(
+            from: voiceTargetInputManager.transcriptText
+        )
+        let target = AppCoordinator.normalizeTargetLabel(
+            resolvedTarget.isEmpty ? (transcriptTarget ?? "") : resolvedTarget
+        )
+
+        voiceTargetInputManager.stopContinuousListening()
+        isFindAndGoTargetCaptureActive = false
+
+        guard !target.isEmpty else {
+            return
+        }
+
+        coordinator.setRequestedFindAndGoTarget(target)
+        playDoubleHapticCue()
+    }
+
+    private func cancelFindAndGoTargetCapture() {
+        if isFindAndGoTargetCaptureActive || voiceTargetInputManager.isListening {
+            voiceTargetInputManager.stopContinuousListening()
+        }
+        isFindAndGoTargetCaptureActive = false
+    }
+
     private func toggleVoiceInput() {
         voiceTargetInputManager.toggleListening(
             onResolvedTarget: { resolvedTarget in
                 coordinator.setRequestedFindAndGoTarget(resolvedTarget)
             },
-            onResolvedMode: { mode in
-                coordinator.setMode(mode)
+            onResolvedMode: { _ in
             }
         )
     }
 
-    private func startVoiceListening() {
-        voiceTargetInputManager.startContinuousListening(
-            onResolvedTarget: { resolvedTarget in
-                coordinator.setRequestedFindAndGoTarget(resolvedTarget)
-            },
-            onResolvedMode: { mode in
-                coordinator.setMode(mode)
-            }
-        )
+    private func playSingleHapticCue() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        generator.impactOccurred()
+    }
+
+    private func playDoubleHapticCue() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            generator.notificationOccurred(.success)
+        }
     }
 
     private func metricTile(title: String, value: String, subtitle: String) -> some View {
@@ -867,6 +1077,39 @@ struct ContentView: View {
         .padding(12)
         .background(AppConfig.Colors.debugPanelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func compactMetricTile(title: String, value: String, subtitle: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 7, height: 7)
+
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(value)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+        }
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .padding(10)
+        .background(.thinMaterial)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(tint.opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private func summaryRow(_ label: String, _ value: String) -> some View {

@@ -112,18 +112,16 @@ final class ObjectDetectionManager: ObservableObject {
     let directionEstimator = DirectionEstimator()
     let decisionSmoother = DecisionSmoother()
     let motionManager: MotionManager
-    private let speechSynthesizer = AVSpeechSynthesizer()
 
     private let inferenceQueue = DispatchQueue(label: "chudsense.ultralytics.inference", qos: .userInitiated)
     private var detector: UltralyticsObjectDetector?
     private var isRunningInference = false
     private var commandSequence = 0
     private var hasLockedFindAndGoTarget = false
+    private var hasSentFindAndGoScanCompleteMessage = false
     private var consecutiveMissingFindAndGoFrames = 0
     private var rememberedTargetBearingRadians: Double?
     private var bestFindAndGoScanObservation: FindAndGoScanObservation?
-    private var hasPlayedFindAndGoArrivalSound = false
-    private var hasPlayedAwarenessStopSound = false
     private var awarenessStopHysteresisState = StopHysteresisState()
     private var findAndGoStopHysteresisState = StopHysteresisState()
     private var gpsStopHysteresisState = StopHysteresisState()
@@ -551,7 +549,6 @@ final class ObjectDetectionManager: ObservableObject {
             latestLiveCommand = nil
             liveCommandJSONText = "No live command JSON"
             liveUrgencyText = "No urgency"
-            hasPlayedAwarenessStopSound = false
             resetStopHysteresisIfNeeded()
             return
         }
@@ -574,11 +571,6 @@ final class ObjectDetectionManager: ObservableObject {
             liveCommandStatusText = urgency == .stop
                 ? "Awareness stop moving"
                 : "Awareness \(command.direction) \(urgency.rawValue)"
-            if urgency == .stop {
-                playAwarenessStopSoundIfNeeded()
-            } else {
-                hasPlayedAwarenessStopSound = false
-            }
 
         case .findAndGo:
             let findAndGoUrgency = stabilizedFindAndGoUrgency(for: selectedTarget.distanceMeters)
@@ -614,6 +606,17 @@ final class ObjectDetectionManager: ObservableObject {
     }
 
     private func updateFindAndGoLiveCommand() {
+        if shouldSendFindAndGoScanCompleteMessage {
+            hasSentFindAndGoScanCompleteMessage = true
+            commandSequence += 1
+            let command = makeFindAndGoScanCompleteMessage(seq: commandSequence)
+            latestLiveCommand = command
+            liveCommandJSONText = makePrettyJSONString(from: command)
+            liveUrgencyText = "Scan Complete"
+            liveCommandStatusText = "Find & Go 360 scan complete"
+            return
+        }
+
         switch findAndGoState {
         case .waitingForTarget:
             liveCommandStatusText = "Find & Go waiting for target"
@@ -690,6 +693,15 @@ final class ObjectDetectionManager: ObservableObject {
             latestLiveCommand = command
             liveCommandJSONText = makePrettyJSONString(from: command)
         }
+    }
+
+    private var shouldSendFindAndGoScanCompleteMessage: Bool {
+        activeMode == .findAndGo
+            && !requestedTargetLabel.isEmpty
+            && motionManager.hasCompletedFullScan
+            && !hasSentFindAndGoScanCompleteMessage
+            && findAndGoState != .waitingForTarget
+            && findAndGoState != .scanning360
     }
 
     private func filteredDetections(from overlays: [DetectionOverlayItem]) -> [DetectionOverlayItem] {
@@ -770,13 +782,10 @@ final class ObjectDetectionManager: ObservableObject {
         if let distanceMeters = selectedTarget.distanceMeters,
            distanceMeters <= AppConfig.Decision.findAndGoArrivalDistanceMeters {
             findAndGoState = .arrived
-            playFindAndGoArrivalSoundIfNeeded()
         } else if decisionSmoother.smoothedDirection == .none {
             findAndGoState = .acquired
-            hasPlayedFindAndGoArrivalSound = false
         } else {
             findAndGoState = .approaching
-            hasPlayedFindAndGoArrivalSound = false
         }
 
         if let distanceMeters = selectedTarget.distanceMeters {
@@ -809,12 +818,11 @@ final class ObjectDetectionManager: ObservableObject {
 
     private func resetFindAndGoState() {
         hasLockedFindAndGoTarget = false
+        hasSentFindAndGoScanCompleteMessage = false
         consecutiveMissingFindAndGoFrames = 0
         findAndGoState = requestedTargetLabel.isEmpty ? .waitingForTarget : .scanning360
         rememberedTargetBearingRadians = nil
         bestFindAndGoScanObservation = nil
-        hasPlayedFindAndGoArrivalSound = false
-        hasPlayedAwarenessStopSound = false
         awarenessStopHysteresisState = StopHysteresisState()
         findAndGoStopHysteresisState = StopHysteresisState()
         gpsStopHysteresisState = StopHysteresisState()
@@ -946,38 +954,6 @@ final class ObjectDetectionManager: ObservableObject {
         }
 
         return normalizedAngle
-    }
-
-    private func playFindAndGoArrivalSoundIfNeeded() {
-        guard !hasPlayedFindAndGoArrivalSound else {
-            return
-        }
-
-        hasPlayedFindAndGoArrivalSound = true
-        speakStop()
-    }
-
-    private func playAwarenessStopSoundIfNeeded() {
-        guard !hasPlayedAwarenessStopSound else {
-            return
-        }
-
-        hasPlayedAwarenessStopSound = true
-        speakStop()
-    }
-
-    private func speakStop() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            modelDetailsText = "Stop audio setup failed: \(error.localizedDescription)"
-        }
-
-        let utterance = AVSpeechUtterance(string: "Stop")
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        speechSynthesizer.speak(utterance)
     }
 
     private func resetStopHysteresisIfNeeded() {

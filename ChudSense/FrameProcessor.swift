@@ -23,11 +23,16 @@ final class FrameProcessor: ObservableObject, FrameProcessing {
     @Published private(set) var placeholderCallbackText = "Ultralytics callback not triggered"
 
     let objectDetectionManager: ObjectDetectionManager
+    let handGestureModeSwitchManager: HandGestureModeSwitchManager
 
     private let timestampFormatter: DateFormatter
 
-    init(objectDetectionManager: ObjectDetectionManager = ObjectDetectionManager()) {
+    init(
+        objectDetectionManager: ObjectDetectionManager = ObjectDetectionManager(),
+        handGestureModeSwitchManager: HandGestureModeSwitchManager = HandGestureModeSwitchManager()
+    ) {
         self.objectDetectionManager = objectDetectionManager
+        self.handGestureModeSwitchManager = handGestureModeSwitchManager
 
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -47,5 +52,6 @@ final class FrameProcessor: ObservableObject, FrameProcessing {
         }
 
         objectDetectionManager.processFrame(snapshot)
+        handGestureModeSwitchManager.processFrame(snapshot)
     }
 }
