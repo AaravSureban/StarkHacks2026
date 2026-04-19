@@ -64,10 +64,9 @@ static const float DANGER_THRESHOLD_CM = 50.0f;
 static const float CAUTION_THRESHOLD_CM = 100.0f;
 
 static const size_t JSON_DOC_CAPACITY = 512;
-static const size_t TELEMETRY_JSON_DOC_CAPACITY = 1024;
 static const size_t REJECTION_REASON_SIZE = 96;
 static const uint16_t BLE_COMMAND_MAX_LEN = 256;
-static const uint16_t BLE_TELEMETRY_MAX_LEN = 512;
+static const uint16_t BLE_TELEMETRY_MAX_LEN = 20;
 static const uint32_t TELEMETRY_INTERVAL_MS = 200;
 
 static const uint8_t COLOR_RED_R = 255;
@@ -244,6 +243,7 @@ uint32_t gLastUltrasonicStartMs = 0;
 uint32_t gLastLogMs = 0;
 uint32_t gPatternPhaseStartedMs = 0;
 uint32_t gLastTelemetrySentMs = 0;
+uint32_t gTelemetrySequence = 0;
 
 uint8_t gCurrentMotorMask = 0;
 uint8_t gCurrentMotorDuty = 0;
@@ -269,8 +269,14 @@ class NavVestCommandCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override;
 };
 
+class NavVestTelemetryCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override;
+};
+
 NavVestServerCallbacks gServerCallbacks;
 NavVestCommandCallbacks gCommandCallbacks;
+NavVestTelemetryCallbacks gTelemetryCallbacks;
 
 void restartAdvertising() {
   NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
@@ -295,6 +301,7 @@ void NavVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo 
   clearActiveCommand();
   gHasLastTelemetrySnapshot = false;
   gLastTelemetrySentMs = 0;
+  gTelemetrySequence = 0;
 
   portENTER_CRITICAL(&gCommandMux);
   gSessionHasAcceptedSeq = false;
@@ -619,6 +626,14 @@ void NavVestCommandCallbacks::onWrite(NimBLECharacteristic *pCharacteristic, Nim
   }
 
   stagePendingCommand(parsedCommand);
+}
+
+void refreshTelemetryCharacteristicValue(uint32_t now);
+
+void NavVestTelemetryCallbacks::onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) {
+  (void)pCharacteristic;
+  (void)connInfo;
+  refreshTelemetryCharacteristicValue(millis());
 }
 
 // ============================================================================
@@ -1355,40 +1370,132 @@ void populateTelemetrySensorObject(JsonObject sensorObject, const TelemetrySenso
   sensorObject["level"] = hazardLevelToString(sensor.level);
 }
 
+uint8_t modeToWire(Mode mode) {
+  return static_cast<uint8_t>(mode);
+}
+
+uint8_t directionToWire(Direction direction) {
+  return static_cast<uint8_t>(direction);
+}
+
+uint8_t patternToWire(Pattern pattern) {
+  switch (pattern) {
+    case PATTERN_STEADY:
+      return 0;
+    case PATTERN_SLOW_PULSE:
+      return 1;
+    case PATTERN_FAST_PULSE:
+      return 2;
+    case PATTERN_NONE:
+    default:
+      return 3;
+  }
+}
+
+uint8_t hazardLevelToWire(HazardLevel level) {
+  switch (level) {
+    case SAFE:
+      return 0;
+    case CAUTION:
+      return 1;
+    case DANGER:
+    default:
+      return 2;
+  }
+}
+
+uint8_t outputSourceToWire(const char *source) {
+  if (strcmp(source, "idle") == 0) {
+    return 0;
+  }
+  if (strcmp(source, "ultrasonic_caution") == 0) {
+    return 1;
+  }
+  if (strcmp(source, "ultrasonic_danger") == 0) {
+    return 2;
+  }
+  if (strcmp(source, "iphone") == 0) {
+    return 3;
+  }
+  return 255;
+}
+
+uint8_t distanceToWireByte(bool valid, float distanceCm) {
+  if (!valid) {
+    return 0;
+  }
+
+  int rounded = static_cast<int>(distanceCm + 0.5f);
+  if (rounded < 0) {
+    return 0;
+  }
+  if (rounded > 255) {
+    return 255;
+  }
+  return static_cast<uint8_t>(rounded);
+}
+
+void writeTelemetryCharacteristicValue(const TelemetrySnapshot &snapshot, uint32_t now) {
+  if (gTelemetryCharacteristic == nullptr) {
+    return;
+  }
+
+  uint8_t payload[BLE_TELEMETRY_MAX_LEN] = {0};
+  uint8_t flags = 0;
+  if (snapshot.bleConnected) {
+    flags |= 0x01;
+  }
+  if (snapshot.commandActive) {
+    flags |= 0x02;
+  }
+  if (snapshot.back.valid) {
+    flags |= 0x04;
+  }
+  if (snapshot.left.valid) {
+    flags |= 0x08;
+  }
+  if (snapshot.right.valid) {
+    flags |= 0x10;
+  }
+  if (snapshot.mode == AWARENESS) {
+    flags |= 0x20;
+  }
+
+  payload[0] = 1;
+  payload[1] = static_cast<uint8_t>(++gTelemetrySequence);
+  payload[2] = modeToWire(snapshot.mode);
+  payload[3] = flags;
+  payload[4] = distanceToWireByte(snapshot.back.valid, snapshot.back.distanceCm);
+  payload[5] = distanceToWireByte(snapshot.left.valid, snapshot.left.distanceCm);
+  payload[6] = distanceToWireByte(snapshot.right.valid, snapshot.right.distanceCm);
+  payload[7] = hazardLevelToWire(snapshot.back.level);
+  payload[8] = hazardLevelToWire(snapshot.left.level);
+  payload[9] = hazardLevelToWire(snapshot.right.level);
+  payload[10] = snapshot.outputMotorMask;
+  payload[11] = snapshot.outputIntensity;
+  payload[12] = patternToWire(snapshot.outputPattern);
+  payload[13] = outputSourceToWire(snapshot.outputSource);
+  payload[14] = directionToWire(snapshot.commandDirection);
+  payload[15] = patternToWire(snapshot.commandPattern);
+  payload[16] = snapshot.commandIntensity;
+  payload[17] = static_cast<uint8_t>(min(snapshot.commandTtlBucketMs / 100, 255UL));
+  payload[18] = static_cast<uint8_t>((now / 1000) & 0xFF);
+  payload[19] = static_cast<uint8_t>(((now / 1000) >> 8) & 0xFF);
+
+  gTelemetryCharacteristic->setValue(payload, sizeof(payload));
+}
+
+void refreshTelemetryCharacteristicValue(uint32_t now) {
+  TelemetrySnapshot snapshot = captureTelemetrySnapshot(gCurrentHazardState, now);
+  writeTelemetryCharacteristicValue(snapshot, now);
+}
+
 void sendTelemetrySnapshot(const TelemetrySnapshot &snapshot, uint32_t now) {
   if (gTelemetryCharacteristic == nullptr) {
     return;
   }
 
-  StaticJsonDocument<TELEMETRY_JSON_DOC_CAPACITY> doc;
-  doc["version"] = 1;
-  doc["mode"] = modeToString(snapshot.mode);
-  doc["bleConnected"] = snapshot.bleConnected;
-
-  JsonObject hazards = doc.createNestedObject("hazards");
-  populateTelemetrySensorObject(hazards.createNestedObject("back"), snapshot.back);
-  populateTelemetrySensorObject(hazards.createNestedObject("left"), snapshot.left);
-  populateTelemetrySensorObject(hazards.createNestedObject("right"), snapshot.right);
-
-  JsonObject output = doc.createNestedObject("output");
-  output["source"] = snapshot.outputSource;
-  JsonArray motorMask = output.createNestedArray("motorMask");
-  appendTelemetryMotorMask(motorMask, snapshot.outputMotorMask);
-  output["intensity"] = snapshot.outputIntensity;
-  output["pattern"] = patternToString(snapshot.outputPattern);
-
-  JsonObject command = doc.createNestedObject("command");
-  command["active"] = snapshot.commandActive;
-  command["direction"] = directionToString(snapshot.commandDirection);
-  command["pattern"] = patternToString(snapshot.commandPattern);
-  command["intensity"] = snapshot.commandIntensity;
-  command["ttlRemainingMs"] = snapshot.commandTtlBucketMs;
-
-  doc["uptimeMs"] = now;
-
-  char payload[BLE_TELEMETRY_MAX_LEN] = {0};
-  size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
-  gTelemetryCharacteristic->setValue(reinterpret_cast<const uint8_t *>(payload), payloadLen);
+  writeTelemetryCharacteristicValue(snapshot, now);
   gTelemetryCharacteristic->notify();
 }
 
@@ -1499,6 +1606,7 @@ void initBLE() {
     Serial.println("WARN: failed to create BLE telemetry characteristic");
     return;
   }
+  gTelemetryCharacteristic->setCallbacks(&gTelemetryCallbacks);
   gTelemetryCharacteristic->setValue("{\"version\":1}");
   service->start();
 
@@ -1528,6 +1636,7 @@ void setup() {
   gPatternPhaseStartedMs = millis();
   gHasLastTelemetrySnapshot = false;
   gLastTelemetrySentMs = 0;
+  gTelemetrySequence = 0;
   updateNeoPixel(gCurrentHazardState, gBleConnected);
   updateTelemetry(gCurrentHazardState, millis());
 }

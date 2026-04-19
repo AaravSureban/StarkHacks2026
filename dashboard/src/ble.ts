@@ -11,6 +11,7 @@ import type {
 const BLE_DEVICE_NAME = 'NavVest'
 const BLE_SERVICE_UUID = '7b7e1000-7c6b-4b8f-9e2a-6b5f4f0a1000'
 const BLE_TELEMETRY_CHAR_UUID = '7b7e1002-7c6b-4b8f-9e2a-6b5f4f0a1000'
+const TELEMETRY_POLL_INTERVAL_MS = 400
 
 const decoder = new TextDecoder()
 
@@ -108,6 +109,145 @@ function decodeValue(dataView: DataView | null): string {
   return decoder.decode(new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength))
 }
 
+function parseModeByte(value: number): Mode {
+  switch (value) {
+    case 0:
+      return 'manual'
+    case 1:
+      return 'awareness'
+    case 2:
+      return 'object_nav'
+    case 3:
+      return 'find_search'
+    case 4:
+      return 'gps_nav'
+    default:
+      return 'manual'
+  }
+}
+
+function parsePatternByte(value: number): Pattern {
+  switch (value) {
+    case 0:
+      return 'steady'
+    case 1:
+      return 'slow_pulse'
+    case 2:
+      return 'fast_pulse'
+    case 3:
+    default:
+      return 'none'
+  }
+}
+
+function parseDirectionByte(value: number): Direction {
+  switch (value) {
+    case 0:
+      return 'left'
+    case 1:
+      return 'front'
+    case 2:
+      return 'right'
+    case 3:
+      return 'back'
+    case 4:
+      return 'front-left'
+    case 5:
+      return 'front-right'
+    case 6:
+      return 'back-left'
+    case 7:
+      return 'back-right'
+    case 8:
+    default:
+      return 'none'
+  }
+}
+
+function parseSourceByte(value: number): string {
+  switch (value) {
+    case 0:
+      return 'idle'
+    case 1:
+      return 'ultrasonic_caution'
+    case 2:
+      return 'ultrasonic_danger'
+    case 3:
+      return 'iphone'
+    default:
+      return 'idle'
+  }
+}
+
+function motorMaskToZones(mask: number): MotorZone[] {
+  const zones: MotorZone[] = []
+  if ((mask & 0x02) !== 0) {
+    zones.push('front')
+  }
+  if ((mask & 0x01) !== 0) {
+    zones.push('back')
+  }
+  if ((mask & 0x04) !== 0) {
+    zones.push('left')
+  }
+  if ((mask & 0x08) !== 0) {
+    zones.push('right')
+  }
+  return zones
+}
+
+function parseBinaryTelemetry(dataView: DataView): TelemetryPayload {
+  if (dataView.byteLength < 20) {
+    throw new Error('Telemetry packet too short')
+  }
+
+  const version = dataView.getUint8(0)
+  const mode = parseModeByte(dataView.getUint8(2))
+  const flags = dataView.getUint8(3)
+  const bleConnected = (flags & 0x01) !== 0
+  const commandActive = (flags & 0x02) !== 0
+  const backValid = (flags & 0x04) !== 0
+  const leftValid = (flags & 0x08) !== 0
+  const rightValid = (flags & 0x10) !== 0
+
+  return {
+    version,
+    mode,
+    bleConnected,
+    hazards: {
+      back: {
+        valid: backValid,
+        distanceCm: dataView.getUint8(4),
+        level: parseHazardLevel(dataView.getUint8(7) === 2 ? 'DANGER' : dataView.getUint8(7) === 1 ? 'CAUTION' : 'SAFE'),
+      },
+      left: {
+        valid: leftValid,
+        distanceCm: dataView.getUint8(5),
+        level: parseHazardLevel(dataView.getUint8(8) === 2 ? 'DANGER' : dataView.getUint8(8) === 1 ? 'CAUTION' : 'SAFE'),
+      },
+      right: {
+        valid: rightValid,
+        distanceCm: dataView.getUint8(6),
+        level: parseHazardLevel(dataView.getUint8(9) === 2 ? 'DANGER' : dataView.getUint8(9) === 1 ? 'CAUTION' : 'SAFE'),
+      },
+    },
+    output: {
+      source: parseSourceByte(dataView.getUint8(13)),
+      motorMask: motorMaskToZones(dataView.getUint8(10)),
+      intensity: dataView.getUint8(11),
+      pattern: parsePatternByte(dataView.getUint8(12)),
+    },
+    command: {
+      active: commandActive,
+      direction: parseDirectionByte(dataView.getUint8(14)),
+      pattern: parsePatternByte(dataView.getUint8(15)),
+      intensity: dataView.getUint8(16),
+      ttlRemainingMs: dataView.getUint8(17) * 100,
+    },
+    uptimeMs: dataView.getUint16(18, true) * 1000,
+  }
+}
+
 function normalizeTelemetry(value: unknown): TelemetryPayload {
   const payload = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
   const hazards =
@@ -153,6 +293,15 @@ function parseTelemetryJson(raw: string): TelemetryPayload {
   return normalizeTelemetry(JSON.parse(raw))
 }
 
+function parseTelemetryPacket(dataView: DataView): TelemetryPayload {
+  const bytes = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength)
+  if (bytes.length > 0 && bytes[0] === 123) {
+    return parseTelemetryJson(decodeValue(dataView))
+  }
+
+  return parseBinaryTelemetry(dataView)
+}
+
 export async function connectToVest(
   onTelemetry: (payload: TelemetryPayload) => void,
   onDisconnect: () => void,
@@ -187,36 +336,61 @@ export async function connectToVest(
 
   device.addEventListener('gattserverdisconnected', handleDisconnect)
 
+  let pollTimer: number | null = null
+  let pollInFlight = false
+
+  const readAndEmitTelemetry = async (source: 'initial' | 'poll') => {
+    const dataView = await telemetryCharacteristic.readValue()
+    const bytes = Array.from(new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength))
+    console.log(`[NavVest] ${source} telemetry read bytes:`, bytes)
+    onTelemetry(parseTelemetryPacket(dataView))
+  }
+
   const notifyHandler = async (event: Event) => {
     const characteristic = event.target as BluetoothRemoteGATTCharacteristic | null
-    const raw = decodeValue(characteristic?.value ?? null)
-    if (!raw) {
+    const dataView = characteristic?.value ?? null
+    if (!dataView || dataView.byteLength === 0) {
       console.log('[NavVest] empty telemetry notification')
       return
     }
 
     try {
-      console.log('[NavVest] telemetry notification:', raw)
-      onTelemetry(parseTelemetryJson(raw))
+      const bytes = Array.from(new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength))
+      console.log('[NavVest] telemetry notification bytes:', bytes)
+      onTelemetry(parseTelemetryPacket(dataView))
     } catch {
       // Ignore malformed packets.
       console.warn('[NavVest] failed to parse telemetry notification')
     }
   }
 
-  const initialValue = await telemetryCharacteristic.readValue()
-  const initialRaw = decodeValue(initialValue)
-  console.log('[NavVest] initial telemetry read:', initialRaw)
-  if (initialRaw) {
-    onTelemetry(parseTelemetryJson(initialRaw))
-  }
+  await readAndEmitTelemetry('initial')
 
   await telemetryCharacteristic.startNotifications()
   telemetryCharacteristic.addEventListener('characteristicvaluechanged', notifyHandler)
 
+  pollTimer = window.setInterval(async () => {
+    if (pollInFlight || !device.gatt?.connected) {
+      return
+    }
+
+    pollInFlight = true
+    try {
+      await readAndEmitTelemetry('poll')
+    } catch (error) {
+      console.warn('[NavVest] polling read failed', error)
+    } finally {
+      pollInFlight = false
+    }
+  }, TELEMETRY_POLL_INTERVAL_MS)
+
   return {
     deviceName: device.name ?? BLE_DEVICE_NAME,
     disconnect: async () => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer)
+        pollTimer = null
+      }
       telemetryCharacteristic.removeEventListener('characteristicvaluechanged', notifyHandler)
       device.removeEventListener('gattserverdisconnected', handleDisconnect)
       if (device.gatt?.connected) {
