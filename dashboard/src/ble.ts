@@ -10,6 +10,7 @@ import type {
 
 const BLE_DEVICE_NAME = 'NavVest'
 const BLE_SERVICE_UUID = '7b7e1000-7c6b-4b8f-9e2a-6b5f4f0a1000'
+const BLE_TELEMETRY_SERVICE_UUID = '7b7e2000-7c6b-4b8f-9e2a-6b5f4f0a2000'
 const BLE_TELEMETRY_CHAR_UUID = '7b7e1002-7c6b-4b8f-9e2a-6b5f4f0a1000'
 const TELEMETRY_POLL_INTERVAL_MS = 400
 
@@ -312,7 +313,7 @@ export async function connectToVest(
 
   const device = await navigator.bluetooth.requestDevice({
     filters: [{ namePrefix: BLE_DEVICE_NAME, services: [BLE_SERVICE_UUID] }],
-    optionalServices: [BLE_SERVICE_UUID],
+    optionalServices: [BLE_SERVICE_UUID, BLE_TELEMETRY_SERVICE_UUID],
   })
 
   const server = await device.gatt?.connect()
@@ -320,11 +321,11 @@ export async function connectToVest(
     throw new Error('Could not connect to the NavVest GATT server')
   }
 
-  const service = await server.getPrimaryService(BLE_SERVICE_UUID)
+  const telemetryService = await server.getPrimaryService(BLE_TELEMETRY_SERVICE_UUID)
   let telemetryCharacteristic: BluetoothRemoteGATTCharacteristic
 
   try {
-    telemetryCharacteristic = await service.getCharacteristic(BLE_TELEMETRY_CHAR_UUID)
+    telemetryCharacteristic = await telemetryService.getCharacteristic(BLE_TELEMETRY_CHAR_UUID)
   } catch {
     device.gatt?.disconnect()
     throw new NoTelemetryCharacteristicError()

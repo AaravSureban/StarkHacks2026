@@ -919,14 +919,14 @@ HapticOutput arbitrate(const HazardState &hazardState) {
     return {singleDirectionForMotorMask(dangerMask), 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger", dangerMask};
   }
 
-  if (hasEffectivePhoneOutput()) {
-    return {gActiveCommand.direction, gActiveCommand.intensity, gActiveCommand.pattern, gActiveCommand.priority, "iphone",
-            motorMaskForDirection(gActiveCommand.direction)};
-  }
-
   uint8_t cautionMask = ultrasonicMotorMaskForLevel(hazardState, CAUTION);
   if (cautionMask != MOTOR_MASK_NONE) {
     return {singleDirectionForMotorMask(cautionMask), 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution", cautionMask};
+  }
+
+  if (hasEffectivePhoneOutput()) {
+    return {gActiveCommand.direction, gActiveCommand.intensity, gActiveCommand.pattern, gActiveCommand.priority, "iphone",
+            motorMaskForDirection(gActiveCommand.direction)};
   }
 
   return makeIdleOutput();
