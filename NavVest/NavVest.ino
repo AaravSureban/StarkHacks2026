@@ -57,6 +57,7 @@ static const uint32_t FAST_PULSE_ON_MS = 150;
 static const uint32_t FAST_PULSE_OFF_MS = 150;
 static const uint32_t FIND_SCAN_COMPLETE_BUZZ_MS = 2000;
 static const uint8_t FIND_SCAN_COMPLETE_INTENSITY = 255;
+static const uint8_t MOTOR_FULL_PWM = 255;
 
 static const uint8_t ULTRASONIC_SENSOR_COUNT = 3;
 static const uint8_t ULTRASONIC_MOVING_AVERAGE_WINDOW = 5;
@@ -66,8 +67,8 @@ static const uint32_t ULTRASONIC_TRIGGER_LOW_US = 2;
 static const uint32_t ULTRASONIC_TRIGGER_HIGH_US = 10;
 static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 25000;
 static const float ULTRASONIC_MAX_VALID_CM = 400.0f;
-static const float DANGER_THRESHOLD_CM = 50.0f;
-static const float CAUTION_THRESHOLD_CM = 100.0f;
+static const float DANGER_THRESHOLD_CM = 80.0f;
+static const float CAUTION_THRESHOLD_CM = 130.0f;
 
 static const size_t JSON_DOC_CAPACITY = 512;
 static const size_t TELEMETRY_JSON_DOC_CAPACITY = 768;
@@ -625,6 +626,34 @@ void clearActiveCommand() {
   gHasActiveCommand = false;
 }
 
+bool isModeSwitchOnlyCommand(const VestCommand &command) {
+  return command.direction == DIR_NONE && command.intensity == 0 && command.pattern == PATTERN_NONE;
+}
+
+Direction normalizeDirectionForMode(Mode mode, Direction direction) {
+  switch (mode) {
+    case FIND_SEARCH:
+    case OBJECT_NAV:
+      switch (direction) {
+        case DIR_FRONT_LEFT:
+        case DIR_BACK_LEFT:
+          return DIR_LEFT;
+        case DIR_FRONT_RIGHT:
+        case DIR_BACK_RIGHT:
+          return DIR_RIGHT;
+        default:
+          return direction;
+      }
+
+    case MANUAL:
+    case AWARENESS:
+    case FIND_SCAN_COMPLETE:
+    case GPS_NAV:
+    default:
+      return direction;
+  }
+}
+
 void triggerFindScanCompleteEffect(uint32_t now) {
   gFindScanCompleteEffectActive = true;
   gFindScanCompleteEffectExpiresAtMs = now + FIND_SCAN_COMPLETE_BUZZ_MS;
@@ -660,6 +689,7 @@ void consumePendingCommand(uint32_t now) {
 
   newCommand.receivedAtMs = now;
   newCommand.expiresAtMs = now + newCommand.ttlMs;
+  newCommand.direction = normalizeDirectionForMode(newCommand.mode, newCommand.direction);
 
   if (newCommand.mode == FIND_SCAN_COMPLETE) {
     triggerFindScanCompleteEffect(now);
@@ -667,6 +697,12 @@ void consumePendingCommand(uint32_t now) {
   }
 
   gCurrentMode = newCommand.mode;
+
+  if (isModeSwitchOnlyCommand(newCommand)) {
+    clearActiveCommand();
+    return;
+  }
+
   gActiveCommand = newCommand;
   gHasActiveCommand = true;
 }
@@ -1077,23 +1113,26 @@ void driveMotorsForMask(uint8_t motorMask, uint8_t intensity) {
     return;
   }
 
+  // Run all motors at full PWM whenever they are active.
+  uint8_t appliedIntensity = MOTOR_FULL_PWM;
+
   allMotorsOff();
 
   if ((motorMask & MOTOR_MASK_BACK) != 0) {
-    enableCardinalMotor(DIR_BACK, intensity);
+    enableCardinalMotor(DIR_BACK, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_FRONT) != 0) {
-    enableCardinalMotor(DIR_FRONT, intensity);
+    enableCardinalMotor(DIR_FRONT, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_LEFT) != 0) {
-    enableCardinalMotor(DIR_LEFT, intensity);
+    enableCardinalMotor(DIR_LEFT, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
-    enableCardinalMotor(DIR_RIGHT, intensity);
+    enableCardinalMotor(DIR_RIGHT, appliedIntensity);
   }
 
   gCurrentMotorMask = motorMask;
-  gCurrentMotorDuty = intensity;
+  gCurrentMotorDuty = appliedIntensity;
 }
 
 bool hapticOutputEquals(const HapticOutput &a, const HapticOutput &b) {
