@@ -1,6 +1,5 @@
 import Combine
 import SwiftUI
-import UIKit
 
 struct ContentView: View {
     @ObservedObject var coordinator: AppCoordinator
@@ -11,6 +10,8 @@ struct ContentView: View {
     @StateObject private var gpsNavigationManager = GPSNavigationManager()
     @State private var isCameraMirrorModeEnabled = false
     @State private var isFindAndGoTargetCaptureActive = false
+    @State private var pendingModeEntryCommand: VestMessage?
+    @State private var bleCommandSequence = 0
 
     private let bleSendTimer = Timer.publish(
         every: AppConfig.BLE.sendTimerIntervalSeconds,
@@ -57,6 +58,7 @@ struct ContentView: View {
             cameraManager.frameProcessor.handGestureModeSwitchManager.onFindAndGoTargetCaptureGesture = {
                 handleFindAndGoTargetCaptureGesture()
             }
+            sendModeEntryCommand(for: coordinator.currentMode)
             updateGPSNavigationLifecycle(for: coordinator.currentMode)
         }
         .onDisappear {
@@ -68,6 +70,7 @@ struct ContentView: View {
             if newMode != .findAndGo {
                 cancelFindAndGoTargetCapture()
             }
+            sendModeEntryCommand(for: newMode)
             cameraManager.frameProcessor.objectDetectionManager.setMode(newMode)
             updateGPSNavigationLifecycle(for: newMode)
         }
@@ -107,7 +110,7 @@ struct ContentView: View {
     private var dashboardHeader: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("ChudSense Live")
+                Text("VisionVest Live")
                     .font(.title2.weight(.bold))
 
                 Text(coordinator.currentMode.summaryText)
@@ -822,6 +825,10 @@ struct ContentView: View {
     }
 
     private var currentOutgoingCommand: VestMessage? {
+        if let pendingModeEntryCommand {
+            return pendingModeEntryCommand
+        }
+
         let localCommand = cameraManager.frameProcessor.objectDetectionManager.latestLiveCommand
 
         guard coordinator.currentMode == .gpsNavigation else {
@@ -960,11 +967,16 @@ struct ContentView: View {
     }
 
     private func sendLatestBLECommandIfNeeded() {
-        guard let latestLiveCommand = currentOutgoingCommand else {
+        if let pendingModeEntryCommand {
+            sendBLECommand(pendingModeEntryCommand, bypassRateLimit: true)
             return
         }
 
-        bleVestManager.send(message: latestLiveCommand)
+        guard let commandToSend = currentOutgoingCommand else {
+            return
+        }
+
+        sendBLECommand(commandToSend)
     }
 
     private func exitCameraMirrorMode() {
@@ -979,12 +991,43 @@ struct ContentView: View {
         }
     }
 
+    private func sendModeEntryCommand(for mode: AppCoordinator.Mode) {
+        switch mode {
+        case .awareness:
+            pendingModeEntryCommand = makeNeutralModeEntryMessage(mode: "awareness")
+        case .findAndGo:
+            pendingModeEntryCommand = makeNeutralModeEntryMessage(mode: "find_search")
+        case .gpsNavigation:
+            pendingModeEntryCommand = makeNeutralModeEntryMessage(mode: "gps_nav")
+        }
+
+        if let modeEntryCommand = pendingModeEntryCommand {
+            for _ in 0..<3 {
+                sendBLECommand(modeEntryCommand, bypassRateLimit: true)
+            }
+        }
+    }
+
+    @discardableResult
+    private func sendBLECommand(_ command: VestMessage, bypassRateLimit: Bool = false) -> Bool {
+        bleCommandSequence += 1
+        let sequencedCommand = command.withSequence(bleCommandSequence)
+        let didSend = bleVestManager.send(
+            message: sequencedCommand,
+            bypassRateLimit: bypassRateLimit
+        )
+
+        if didSend, pendingModeEntryCommand?.mode == command.mode {
+            pendingModeEntryCommand = nil
+        }
+
+        return didSend
+    }
+
     private func handleFindAndGoTargetCaptureGesture() {
         guard coordinator.currentMode == .findAndGo else {
             return
         }
-
-        playSingleHapticCue()
 
         if isFindAndGoTargetCaptureActive {
             finishFindAndGoTargetCapture()
@@ -1022,7 +1065,6 @@ struct ContentView: View {
         }
 
         coordinator.setRequestedFindAndGoTarget(target)
-        playDoubleHapticCue()
     }
 
     private func cancelFindAndGoTargetCapture() {
@@ -1040,22 +1082,6 @@ struct ContentView: View {
             onResolvedMode: { _ in
             }
         )
-    }
-
-    private func playSingleHapticCue() {
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.prepare()
-        generator.impactOccurred()
-    }
-
-    private func playDoubleHapticCue() {
-        let generator = UINotificationFeedbackGenerator()
-        generator.prepare()
-        generator.notificationOccurred(.success)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-            generator.notificationOccurred(.success)
-        }
     }
 
     private func metricTile(title: String, value: String, subtitle: String) -> some View {

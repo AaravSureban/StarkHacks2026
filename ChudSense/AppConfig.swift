@@ -226,7 +226,7 @@ enum AppConfig {
     }
 
     enum Copy {
-        static let appTitle = "ChudSense"
+        static let appTitle = "VisionVest"
         static let homeTitle = "iPhone Compute Shell"
         static let homeSubtitle = "Live camera detection powered by an Ultralytics YOLO pipeline."
         static let cameraPlaceholderTitle = "Live Camera Preview"

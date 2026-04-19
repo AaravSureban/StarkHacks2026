@@ -113,7 +113,7 @@ final class ObjectDetectionManager: ObservableObject {
     let decisionSmoother = DecisionSmoother()
     let motionManager: MotionManager
 
-    private let inferenceQueue = DispatchQueue(label: "chudsense.ultralytics.inference", qos: .userInitiated)
+    private let inferenceQueue = DispatchQueue(label: "visionvest.ultralytics.inference", qos: .userInitiated)
     private var detector: UltralyticsObjectDetector?
     private var isRunningInference = false
     private var commandSequence = 0
@@ -625,7 +625,15 @@ final class ObjectDetectionManager: ObservableObject {
             liveUrgencyText = "No urgency"
             findAndGoStopHysteresisState = StopHysteresisState()
 
-        case .scanning360, .searching, .reacquiring, .bearingGuidance:
+        case .scanning360:
+            liveCommandStatusText = bestFindAndGoScanObservation == nil
+                ? "Complete 360 scan for \(requestedTargetLabel)"
+                : "Finish scan; \(requestedTargetLabel) bearing locked"
+            latestLiveCommand = nil
+            liveCommandJSONText = "No live command JSON"
+            liveUrgencyText = "Scanning"
+
+        case .searching, .reacquiring, .bearingGuidance:
             let searchDirection = currentSearchDirection
             commandSequence += 1
             let command = makeFindAndGoSearchMessage(
@@ -633,10 +641,6 @@ final class ObjectDetectionManager: ObservableObject {
                 seq: commandSequence
             )
             switch findAndGoState {
-            case .scanning360:
-                liveCommandStatusText = bestFindAndGoScanObservation == nil
-                    ? "Complete 360 scan for \(requestedTargetLabel)"
-                    : "Finish scan; \(requestedTargetLabel) bearing locked"
             case .searching:
                 liveCommandStatusText = bestFindAndGoScanObservation == nil
                     ? "Find & Go target not found; search \(command.direction)"
@@ -645,7 +649,7 @@ final class ObjectDetectionManager: ObservableObject {
                 liveCommandStatusText = "Find & Go reacquire \(command.direction) for \(requestedTargetLabel)"
             case .bearingGuidance:
                 liveCommandStatusText = "Find & Go turn \(command.direction) to \(requestedTargetLabel)"
-            case .waitingForTarget, .acquired, .approaching, .arrived:
+            case .waitingForTarget, .scanning360, .acquired, .approaching, .arrived:
                 liveCommandStatusText = "Find & Go search update"
             }
             latestLiveCommand = command
@@ -655,8 +659,7 @@ final class ObjectDetectionManager: ObservableObject {
         case .acquired, .approaching, .arrived:
             guard
                 let selectedTarget = targetSelector.selectedTarget,
-                selectedTarget.confidence >= AppConfig.Decision.minimumConfidenceThreshold,
-                decisionSmoother.smoothedDirection != .none
+                selectedTarget.confidence >= AppConfig.Decision.minimumConfidenceThreshold
             else {
                 liveCommandStatusText = "Find & Go stabilizing target"
                 latestLiveCommand = nil
@@ -666,10 +669,24 @@ final class ObjectDetectionManager: ObservableObject {
                 return
             }
 
-            let urgency = stabilizedFindAndGoUrgency(for: selectedTarget.distanceMeters)
+            guard decisionSmoother.smoothedDirection != .none else {
+                commandSequence += 1
+                let command = makeNeutralModeEntryMessage(mode: "object_nav", seq: commandSequence)
+                latestLiveCommand = command
+                liveCommandJSONText = makePrettyJSONString(from: command)
+                liveUrgencyText = "Object Nav"
+                liveCommandStatusText = "Find & Go object navigation ready"
+                return
+            }
+
+            let smoothedDirection = decisionSmoother.smoothedDirection
+            let urgency = findAndGoUrgency(
+                for: smoothedDirection,
+                distanceMeters: selectedTarget.distanceMeters
+            )
             commandSequence += 1
             let command = makeObjectNavigationMessage(
-                direction: decisionSmoother.smoothedDirection,
+                direction: smoothedDirection,
                 urgency: urgency,
                 confidence: selectedTarget.confidence,
                 distanceMeters: selectedTarget.distanceMeters,
@@ -701,7 +718,6 @@ final class ObjectDetectionManager: ObservableObject {
             && motionManager.hasCompletedFullScan
             && !hasSentFindAndGoScanCompleteMessage
             && findAndGoState != .waitingForTarget
-            && findAndGoState != .scanning360
     }
 
     private func filteredDetections(from overlays: [DetectionOverlayItem]) -> [DetectionOverlayItem] {
@@ -981,6 +997,22 @@ final class ObjectDetectionManager: ObservableObject {
             stopDistanceMeters: AppConfig.Decision.findAndGoArrivalDistanceMeters,
             state: &findAndGoStopHysteresisState
         )
+    }
+
+    private func findAndGoUrgency(
+        for direction: DirectionEstimator.Direction,
+        distanceMeters: Float?
+    ) -> NavigationUrgency {
+        let urgency = stabilizedFindAndGoUrgency(for: distanceMeters)
+
+        guard direction.vestDirectionValue == "front",
+              let distanceMeters else {
+            return urgency
+        }
+
+        return distanceMeters > AppConfig.Decision.findAndGoArrivalDistanceMeters
+            ? urgency
+            : .stop
     }
 
     private func stabilizedGPSUrgency(for distanceMeters: Float?) -> NavigationUrgency {

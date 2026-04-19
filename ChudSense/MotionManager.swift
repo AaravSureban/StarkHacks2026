@@ -17,7 +17,7 @@ final class MotionManager: ObservableObject {
     private var signedRotationRadians: Double = 0
 
     init() {
-        updateQueue.name = "chudsense.motion.updates"
+        updateQueue.name = "visionvest.motion.updates"
         updateQueue.qualityOfService = .userInteractive
     }
 
@@ -62,17 +62,21 @@ final class MotionManager: ObservableObject {
 
                 let yawRadians = Self.normalizedAngle(motion.attitude.yaw)
                 if let previousYawRadians = self.previousYawRadians {
-                    let yawDelta = Self.normalizedAngle(yawRadians - previousYawRadians)
-                    if abs(yawDelta) >= Self.minimumYawDeltaRadians {
-                        self.signedRotationRadians += yawDelta
+                    if !self.hasCompletedFullScan {
+                        let yawDelta = Self.normalizedAngle(yawRadians - previousYawRadians)
+                        if abs(yawDelta) >= Self.minimumYawDeltaRadians {
+                            self.signedRotationRadians += yawDelta
+                        }
+                        self.accumulatedRotationRadians = abs(self.signedRotationRadians)
+                        self.accumulatedRotationDegreesText = String(
+                            format: "%.0f°",
+                            self.accumulatedRotationRadians * 180 / .pi
+                        )
+                        if self.accumulatedRotationRadians * 180 / .pi
+                            >= AppConfig.Decision.findAndGoRequiredScanDegrees {
+                            self.hasCompletedFullScan = true
+                        }
                     }
-                    self.accumulatedRotationRadians = abs(self.signedRotationRadians)
-                    self.accumulatedRotationDegreesText = String(
-                        format: "%.0f°",
-                        self.accumulatedRotationRadians * 180 / .pi
-                    )
-                    self.hasCompletedFullScan = self.accumulatedRotationRadians * 180 / .pi
-                        >= AppConfig.Decision.findAndGoRequiredScanDegrees
                 }
 
                 self.previousYawRadians = yawRadians

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ChudSenseApp: App {
+struct VisionVestApp: App {
     @StateObject private var coordinator = AppCoordinator()
 
     var body: some Scene {

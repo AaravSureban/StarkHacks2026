@@ -2,7 +2,7 @@
 
 ## Architecture Summary
 
-ChudSense is organized as a split-compute wearable system:
+VisionVest is organized as a split-compute wearable system:
 
 - The iPhone is responsible for camera perception, object detection, target
   selection, direction reasoning, future depth integration, future speech, and

@@ -33,14 +33,14 @@ All command packets use this structure:
 Fields:
 
 - `mode`: source/type of command.
-- `direction`: one of `left`, `front_left`, `front`, `front_right`, `right`, `back_right`, `back`, `back_left`, or `none`.
+- `direction`: one of `front`, `back`, `left`, `right`, or `none`.
 - `intensity`: motor strength, typically `0...255`.
 - `pattern`: vibration pattern, such as `steady`, `slow_pulse`, `fast_pulse`, or `none`.
 - `priority`: command priority. Higher values should override lower values on the ESP32.
 - `ttlMs`: command time-to-live in milliseconds.
 - `confidence`: detector confidence, or `1.0` for GPS/manual commands.
 - `distance`: distance in meters if available, otherwise `null`.
-- `seq`: increasing sequence number.
+- `seq`: increasing sequence number assigned by the iPhone BLE send path.
 
 ## Mode Values
 
@@ -51,17 +51,19 @@ Current `mode` values:
 - `find_search`: Find & Go scan/search/bearing guidance.
 - `find_scan_complete`: one-time packet after Find & Go 360 scan completes.
 - `object_nav`: object navigation toward a selected target, also used for local camera safety override.
-- `gps`: GPS bearing guidance.
+- `gps_nav`: GPS bearing guidance.
 
 ## Mode Switching
 
-Switching modes does not currently send a dedicated mode-change packet.
+Switching modes sends one neutral mode-entry packet immediately.
 
-Instead, the next active command uses the packet type for the new mode:
+If BLE is not connected yet, that one mode-entry packet stays pending and is sent once when the BLE timer can deliver it.
+
+After that, the next active command uses the packet type for the new mode:
 
 - Awareness sends `awareness` packets once a stable obstacle target exists.
 - Find & Go sends `find_search`, `find_scan_complete`, or `object_nav` depending on state.
-- GPS sends `gps` packets unless local camera safety has higher priority.
+- GPS sends `gps_nav` packets unless local camera safety has higher priority.
 - GPS local camera safety override sends `object_nav`.
 
 ## Find & Go Flow
@@ -70,7 +72,21 @@ Instead, the next active command uses the packet type for the new mode:
 
 The user switches to Find & Go using the UI or hand gesture.
 
-If no target is set yet, no BLE packet is sent.
+The app sends a neutral `find_search` mode-entry packet:
+
+```json
+{
+  "mode": "find_search",
+  "direction": "none",
+  "intensity": 0,
+  "pattern": "none",
+  "priority": 1,
+  "ttlMs": 500,
+  "confidence": 0,
+  "distance": null,
+  "seq": 1
+}
+```
 
 ### 2. Start Target Voice Capture
 
@@ -123,6 +139,8 @@ During the scan, the app may see the requested object and remember its best bear
 
 If a closer/clearer matching object appears later in the scan, the remembered target can be replaced.
 
+In Find & Go search, `left` means turn left and `right` means turn right.
+
 ### 5. 360 Scan Complete
 
 When the scan finishes, the app sends one transition packet:
@@ -152,7 +170,7 @@ If the target is visible and stable, the app sends `object_nav`:
 ```json
 {
   "mode": "object_nav",
-  "direction": "front_right",
+  "direction": "right",
   "intensity": 180,
   "pattern": "slow_pulse",
   "priority": 2,
@@ -184,7 +202,7 @@ If the target is not visible after the scan, but the app has a remembered bearin
 ```json
 {
   "mode": "find_search",
-  "direction": "front_left",
+  "direction": "left",
   "intensity": 110,
   "pattern": "slow_pulse",
   "priority": 1,
@@ -219,8 +237,8 @@ At any point during Find & Go, showing `4` fingers again can restart the target 
 
 ```json
 {
-  "mode": "gps",
-  "direction": "front_right",
+  "mode": "gps_nav",
+  "direction": "right",
   "intensity": 150,
   "pattern": "slow_pulse",
   "priority": 1,
@@ -235,7 +253,7 @@ At any point during Find & Go, showing `4` fingers again can restart the target 
 
 GPS mode can be overridden by local camera safety.
 
-If the camera sees a higher-priority nearby obstacle while GPS is active, the app sends `object_nav` instead of `gps`.
+If the camera sees a higher-priority nearby obstacle while GPS is active, the app sends `object_nav` instead of `gps_nav`.
 
 Example:
 

@@ -39,8 +39,8 @@ final class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
     let frameProcessor: FrameProcessor
 
-    private let sessionQueue = DispatchQueue(label: "chudsense.camera.session")
-    private let outputQueue = DispatchQueue(label: "chudsense.camera.output")
+    private let sessionQueue = DispatchQueue(label: "visionvest.camera.session")
+    private let outputQueue = DispatchQueue(label: "visionvest.camera.output")
     private let videoOutput = AVCaptureVideoDataOutput()
     private let depthOutput = AVCaptureDepthDataOutput()
     private var outputSynchronizer: AVCaptureDataOutputSynchronizer?

@@ -53,22 +53,14 @@ enum VestCommand: String, CaseIterable {
 
     var directionValue: String {
         switch self {
-        case .left:
+        case .left, .frontLeft, .backLeft:
             return "left"
-        case .frontLeft:
-            return "front_left"
         case .front:
             return "front"
-        case .frontRight:
-            return "front_right"
-        case .right:
+        case .right, .frontRight, .backRight:
             return "right"
-        case .backRight:
-            return "back_right"
         case .back:
             return "back"
-        case .backLeft:
-            return "back_left"
         case .danger, .stop:
             return "none"
         }
@@ -154,6 +146,23 @@ enum NavigationUrgency: String {
     }
 }
 
+extension DirectionEstimator.Direction {
+    var vestDirectionValue: String {
+        switch self {
+        case .front:
+            return "front"
+        case .back:
+            return "back"
+        case .left, .frontLeft, .backLeft:
+            return "left"
+        case .right, .frontRight, .backRight:
+            return "right"
+        case .none:
+            return "none"
+        }
+    }
+}
+
 struct VestMessage: Codable {
     let mode: String
     let direction: String
@@ -164,6 +173,53 @@ struct VestMessage: Codable {
     let confidence: Double
     let distance: Double?
     let seq: Int
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case direction
+        case intensity
+        case pattern
+        case priority
+        case ttlMs
+        case confidence
+        case distance
+        case seq
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(direction, forKey: .direction)
+        try container.encode(intensity, forKey: .intensity)
+        try container.encode(pattern, forKey: .pattern)
+        try container.encode(priority, forKey: .priority)
+        try container.encode(ttlMs, forKey: .ttlMs)
+        try container.encode(confidence, forKey: .confidence)
+
+        if let distance {
+            try container.encode(distance, forKey: .distance)
+        } else {
+            try container.encodeNil(forKey: .distance)
+        }
+
+        try container.encode(seq, forKey: .seq)
+    }
+}
+
+extension VestMessage {
+    func withSequence(_ seq: Int) -> VestMessage {
+        VestMessage(
+            mode: mode,
+            direction: direction,
+            intensity: intensity,
+            pattern: pattern,
+            priority: priority,
+            ttlMs: ttlMs,
+            confidence: confidence,
+            distance: distance,
+            seq: seq
+        )
+    }
 }
 
 func makeMessage(for command: VestCommand, seq: Int = 0) -> VestMessage {
@@ -180,6 +236,20 @@ func makeMessage(for command: VestCommand, seq: Int = 0) -> VestMessage {
     )
 }
 
+func makeNeutralModeEntryMessage(mode: String, priority: Int = 1, seq: Int = 0) -> VestMessage {
+    VestMessage(
+        mode: mode,
+        direction: "none",
+        intensity: 0,
+        pattern: "none",
+        priority: priority,
+        ttlMs: 500,
+        confidence: mode == "gps_nav" ? 1.0 : 0.0,
+        distance: nil,
+        seq: seq
+    )
+}
+
 func makeObjectNavigationMessage(
     direction: DirectionEstimator.Direction,
     urgency: NavigationUrgency,
@@ -189,7 +259,7 @@ func makeObjectNavigationMessage(
 ) -> VestMessage {
     VestMessage(
         mode: "object_nav",
-        direction: urgency == .stop ? "none" : direction.rawValue,
+        direction: urgency == .stop ? "none" : direction.vestDirectionValue,
         intensity: urgency.intensity,
         pattern: urgency.pattern,
         priority: urgency.priority,
@@ -206,7 +276,7 @@ func makeFindAndGoSearchMessage(
 ) -> VestMessage {
     VestMessage(
         mode: "find_search",
-        direction: direction.rawValue,
+        direction: direction.vestDirectionValue,
         intensity: 110,
         pattern: "slow_pulse",
         priority: 1,
@@ -237,8 +307,8 @@ func makeGPSNavigationMessage(
     seq: Int
 ) -> VestMessage {
     VestMessage(
-        mode: "gps",
-        direction: direction.rawValue,
+        mode: "gps_nav",
+        direction: direction.vestDirectionValue,
         intensity: AppConfig.GPS.commandIntensity,
         pattern: "slow_pulse",
         priority: AppConfig.GPS.commandPriority,
@@ -258,7 +328,7 @@ func makeAwarenessMessage(
 ) -> VestMessage {
     VestMessage(
         mode: "awareness",
-        direction: urgency == .stop ? "none" : direction.rawValue,
+        direction: urgency == .stop ? "none" : direction.vestDirectionValue,
         intensity: urgency.intensity,
         pattern: urgency.pattern,
         priority: urgency.priority,

@@ -65,7 +65,7 @@ final class BLEVestManager: NSObject, ObservableObject {
         vestPeripheral = nil
         connectedPeripheralName = "No vest connected"
         connectionState = .scanning
-        statusText = "Scanning for ChudSense vest"
+        statusText = "Scanning for VisionVest vest"
         centralManager.scanForPeripherals(
             withServices: [vestServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -86,13 +86,14 @@ final class BLEVestManager: NSObject, ObservableObject {
         statusText = "BLE disconnected"
     }
 
-    func send(message: VestMessage) {
+    @discardableResult
+    func send(message: VestMessage, bypassRateLimit: Bool = false) -> Bool {
         guard canSendCommands else {
-            return
+            return false
         }
 
-        guard shouldSendNow() else {
-            return
+        guard bypassRateLimit || shouldSendNow() else {
+            return false
         }
 
         do {
@@ -100,8 +101,10 @@ final class BLEVestManager: NSObject, ObservableObject {
             encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(message)
             send(data: data, seq: message.seq)
+            return true
         } catch {
             lastSendStatusText = "BLE encode failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -173,7 +176,7 @@ extension BLEVestManager: CBCentralManagerDelegate {
         central.stopScan()
         vestPeripheral = peripheral
         peripheral.delegate = self
-        connectedPeripheralName = peripheral.name ?? "ChudSense Vest"
+        connectedPeripheralName = peripheral.name ?? "VisionVest Vest"
         connectionState = .connecting
         statusText = "Connecting to \(connectedPeripheralName)"
         central.connect(peripheral)
@@ -182,7 +185,7 @@ extension BLEVestManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectionState = .connecting
         statusText = "Discovering vest services"
-        connectedPeripheralName = peripheral.name ?? "ChudSense Vest"
+        connectedPeripheralName = peripheral.name ?? "VisionVest Vest"
         peripheral.discoverServices([vestServiceUUID])
     }
 

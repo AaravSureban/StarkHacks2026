@@ -1,6 +1,6 @@
-# ChudSense
+# VisionVest
 
-ChudSense is a wearable assistive navigation system being built incrementally.
+VisionVest is a wearable assistive navigation system being built incrementally.
 The project is split so the iPhone handles perception and planning first, while
 the ESP32 handles execution and safety once the command pipeline is stable.
 
@@ -11,7 +11,7 @@ the ESP32 handles execution and safety once the command pipeline is stable.
 - `docs/` contains architecture and implementation notes.
 - `protocol/` contains the shared command contract used across iPhone and ESP32.
 - `tests/` contains manual and automated validation artifacts.
-- `ChudSense/` contains the current Xcode project being migrated into this
+- `VisionVest/` contains the current Xcode project being migrated into this
   milestone-based structure.
 
 ## Current Milestone
@@ -21,7 +21,7 @@ No BLE, ESP32 firmware, or hardware control is implemented in this milestone.
 
 ## iOS App Structure
 
-The active Xcode app in `ChudSense/` is being revised to follow an incremental
+The active Xcode app in `VisionVest/` is being revised to follow an incremental
 iPhone-first architecture:
 
 - `AppCoordinator` owns app-level shell state and will later coordinate camera,

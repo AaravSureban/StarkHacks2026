@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 import Vision
 
 final class HandGestureModeSwitchManager: ObservableObject {
@@ -9,7 +10,7 @@ final class HandGestureModeSwitchManager: ObservableObject {
     var onModeDetected: ((AppCoordinator.Mode) -> Void)?
     var onFindAndGoTargetCaptureGesture: (() -> Void)?
 
-    private let visionQueue = DispatchQueue(label: "chudsense.handGesture.vision", qos: .userInitiated)
+    private let visionQueue = DispatchQueue(label: "visionvest.handGesture.vision", qos: .userInitiated)
     private var isProcessingFrame = false
     private var lastProcessedFrameNumber = 0
     private var lastAcceptedGesture: AppCoordinator.Mode?
@@ -19,6 +20,7 @@ final class HandGestureModeSwitchManager: ObservableObject {
     private var lastSwitchDate = Date.distantPast
     private var lastTargetCaptureGestureDate = Date.distantPast
     private var isTargetCaptureGestureArmed = true
+    private let targetCaptureHapticGenerator = UIImpactFeedbackGenerator(style: .heavy)
 
     private let minimumPointConfidence: VNConfidence = 0.35
     private let extendedFingerXOffset: CGFloat = 0.055
@@ -28,6 +30,10 @@ final class HandGestureModeSwitchManager: ObservableObject {
     private let frameStride = 2
     private let switchCooldownSeconds: TimeInterval = 2.0
     private let targetCaptureCooldownSeconds: TimeInterval = 1.2
+
+    init() {
+        targetCaptureHapticGenerator.prepare()
+    }
 
     func processFrame(_ snapshot: FrameProcessingSnapshot) {
         guard snapshot.frameNumber == 1 || snapshot.frameNumber.isMultiple(of: frameStride) else {
@@ -199,6 +205,12 @@ final class HandGestureModeSwitchManager: ObservableObject {
         isTargetCaptureGestureArmed = false
         lastTargetCaptureGestureDate = now
         statusText = "Find & Go target capture gesture"
+        playTargetCaptureHaptic()
         onFindAndGoTargetCaptureGesture?()
+    }
+
+    private func playTargetCaptureHaptic() {
+        targetCaptureHapticGenerator.prepare()
+        targetCaptureHapticGenerator.impactOccurred(intensity: 1.0)
     }
 }
