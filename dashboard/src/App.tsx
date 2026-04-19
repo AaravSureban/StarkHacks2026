@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { connectTelemetryPoller, type TelemetryPollerSession } from './wifi'
 import type { ConnectionState, EventItem, HazardLevel, MotorZone, TelemetryPayload, TelemetrySensorState } from './types'
@@ -28,7 +28,7 @@ function formatSource(source: string) {
     case 'ultrasonic_caution':
       return 'Ultrasonic caution response'
     case 'iphone':
-      return 'Phone guidance command'
+      return 'Guidance cue'
     case 'idle':
       return 'No haptic output'
     default:
@@ -40,20 +40,24 @@ function formatPattern(pattern: string) {
   return pattern.replace(/_/g, ' ')
 }
 
-function formatDistance(sensor: TelemetrySensorState) {
-  if (!sensor.valid) {
-    return 'No echo'
-  }
-
-  return `${Math.round(sensor.distanceCm)} cm`
-}
-
 function describeMotorMask(motorMask: MotorZone[]) {
   if (motorMask.length === 0) {
     return 'None'
   }
 
   return motorMask.map((zone) => zone.charAt(0).toUpperCase() + zone.slice(1)).join(' + ')
+}
+
+function formatSensorCaption(sensor: TelemetrySensorState | null) {
+  if (!sensor) {
+    return 'guidance cue'
+  }
+
+  if (!sensor.valid) {
+    return 'No echo'
+  }
+
+  return `${Math.round(sensor.distanceCm)} cm`
 }
 
 function hazardRank(level: HazardLevel) {
@@ -79,6 +83,86 @@ function findPriorityHazard(telemetry: TelemetryPayload) {
     },
     { side: 'back', level: 'SAFE' as HazardLevel },
   )
+}
+
+function lowerCaseDirection(direction: string) {
+  return formatLabel(direction).toLowerCase()
+}
+
+function describeTarget(telemetry: TelemetryPayload | null, hazardHeadline: { side: string; level: HazardLevel } | null) {
+  if (!telemetry) {
+    return 'Waiting for live target data.'
+  }
+
+  const direction = telemetry.command.direction
+  const hasGuidanceTarget = telemetry.command.active && direction !== 'none'
+
+  switch (telemetry.mode) {
+    case 'find_search':
+      return hasGuidanceTarget
+        ? `Search target is being tracked ${lowerCaseDirection(direction)} of the wearer.`
+        : 'Find/Search is active, but no target is currently locked.'
+    case 'object_nav':
+      return hasGuidanceTarget
+        ? `Navigation object is being guided ${lowerCaseDirection(direction)} of the wearer.`
+        : 'Object navigation is active, but no object is currently selected.'
+    case 'gps_nav':
+      return hasGuidanceTarget
+        ? `Waypoint guidance is pulling ${lowerCaseDirection(direction)}.`
+        : 'GPS navigation is active, but no directional cue is currently active.'
+    case 'manual':
+      return hasGuidanceTarget
+        ? `Manual guidance is currently set ${lowerCaseDirection(direction)}.`
+        : 'Manual mode is active with no directional cue.'
+    case 'awareness':
+    default:
+      if (hazardHeadline && hazardHeadline.level !== 'SAFE') {
+        return `Obstacle watch is focused on the ${hazardHeadline.side} side.`
+      }
+      return 'Obstacle watch is active with no close hazards.'
+  }
+}
+
+function describeOutputSentence(telemetry: TelemetryPayload | null, hazardHeadline: { side: string; level: HazardLevel } | null) {
+  if (!telemetry) {
+    return 'Connect to the ESP32 to start the live haptic story.'
+  }
+
+  const activeZones = telemetry.output.motorMask.map((zone) => zone.toUpperCase())
+  const zoneText = activeZones.length > 0 ? activeZones.join(' + ') : 'no motor zones'
+  const patternText = formatPattern(telemetry.output.pattern)
+
+  switch (telemetry.output.source) {
+    case 'ultrasonic_danger':
+      return `${formatLabel(hazardHeadline?.side ?? 'back')} danger detected. ${zoneText} motor zone is firing with a ${patternText} alert.`
+    case 'ultrasonic_caution':
+      return `${formatLabel(hazardHeadline?.side ?? 'back')} caution detected. ${zoneText} motor zone is pulsing a ${patternText} warning.`
+    case 'iphone':
+      return `Guidance is steering the wearer toward ${formatLabel(telemetry.command.direction)} with a ${patternText} haptic cue.`
+    case 'idle':
+    default:
+      return 'The vest is currently quiet with no active haptic output.'
+  }
+}
+
+function activeDecisionLayer(telemetry: TelemetryPayload | null) {
+  if (!telemetry) {
+    return 'none'
+  }
+
+  if (telemetry.output.source === 'ultrasonic_danger') {
+    return 'danger'
+  }
+
+  if (telemetry.output.source === 'iphone') {
+    return 'guidance'
+  }
+
+  if (telemetry.output.source === 'ultrasonic_caution') {
+    return 'caution'
+  }
+
+  return 'none'
 }
 
 function freshnessLabel(lastUpdateMs: number | null, nowMs: number) {
@@ -112,6 +196,7 @@ function App() {
   const [events, setEvents] = useState<EventItem[]>([])
   const [statusMessage, setStatusMessage] = useState('Enter the ESP32 URL and start live Wi-Fi telemetry.')
   const [baseUrl, setBaseUrl] = useState(() => window.localStorage.getItem(BASE_URL_STORAGE_KEY) ?? DEFAULT_BASE_URL)
+  const [isFullscreen, setIsFullscreen] = useState(() => document.fullscreenElement !== null)
 
   const sessionRef = useRef<TelemetryPollerSession | null>(null)
   const previousTelemetryRef = useRef<TelemetryPayload | null>(null)
@@ -186,6 +271,17 @@ function App() {
     window.localStorage.setItem(BASE_URL_STORAGE_KEY, baseUrl)
   }, [baseUrl])
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement !== null)
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }
+  }, [])
+
   const handleDisconnect = async () => {
     const session = sessionRef.current
     sessionRef.current = null
@@ -239,18 +335,33 @@ function App() {
     }
   }, [])
 
+  const handleToggleFullscreen = async () => {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen()
+      return
+    }
+
+    await document.documentElement.requestFullscreen()
+  }
+
   const activeTelemetry = telemetry
   const freshness = freshnessLabel(lastUpdateMs, nowMs)
   const hazardHeadline = activeTelemetry ? findPriorityHazard(activeTelemetry) : null
   const ultrasonicEnabled = activeTelemetry?.mode === 'awareness'
+  const outputSentence = describeOutputSentence(activeTelemetry, hazardHeadline)
+  const targetDescription = describeTarget(activeTelemetry, hazardHeadline)
+  const winningLayer = activeDecisionLayer(activeTelemetry)
 
   const heroState = useMemo(() => {
     const motorMask = new Set(activeTelemetry?.output.motorMask ?? [])
+    const commandDirection = activeTelemetry?.command.direction ?? 'none'
     return {
       front: motorMask.has('front'),
       back: motorMask.has('back'),
       left: motorMask.has('left'),
       right: motorMask.has('right'),
+      frontLeft: commandDirection === 'front-left' || (motorMask.has('front') && motorMask.has('left')),
+      frontRight: commandDirection === 'front-right' || (motorMask.has('front') && motorMask.has('right')),
     }
   }, [activeTelemetry])
 
@@ -260,10 +371,6 @@ function App() {
         <div className="brand-block">
           <p className="eyebrow">NavVest Judge Dashboard</p>
           <h1>Live ESP32 Wi-Fi telemetry.</h1>
-          <p className="subtitle">
-            Join the ESP32&apos;s `NavVest` Wi-Fi network, keep the iPhone on BLE control, and mirror the vest over the
-            telemetry endpoint.
-          </p>
         </div>
 
         <div className="status-grid">
@@ -303,6 +410,9 @@ function App() {
               <button className="action-button primary" onClick={handleConnect} disabled={connectionState === 'connecting'}>
                 {sessionRef.current ? 'Reconnect' : 'Connect'}
               </button>
+              <button className="action-button" onClick={handleToggleFullscreen}>
+                {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+              </button>
               <button className="action-button muted" onClick={handleDisconnect} disabled={!sessionRef.current}>
                 Disconnect
               </button>
@@ -312,94 +422,89 @@ function App() {
       </section>
 
       <section className="main-grid">
-        <section className="sensor-column">
-          {SENSOR_SIDES.map((side) => {
-            const sensor = activeTelemetry?.hazards[side] ?? { valid: false, distanceCm: 0, level: 'SAFE' as HazardLevel }
-            const gaugeValue = sensor.valid ? Math.max(8, Math.min(100, ((400 - sensor.distanceCm) / 400) * 100)) : 8
-
-            return (
-              <article
-                key={side}
-                className={`panel sensor-card level-${sensor.level.toLowerCase()}`}
-                style={{ '--gauge-fill': `${gaugeValue}%` } as CSSProperties}
-              >
-                <div className="sensor-header">
-                  <div>
-                    <p className="eyebrow">{side} sensor</p>
-                    <h2>{formatDistance(sensor)}</h2>
-                  </div>
-                  <span className={`level-pill level-${sensor.level.toLowerCase()}`}>{sensor.level}</span>
-                </div>
-
-                <div className="sensor-meter" aria-hidden="true">
-                  <div className="sensor-ring" />
-                  <div className="sensor-core">
-                    <span>{sensor.valid ? Math.round(sensor.distanceCm) : '--'}</span>
-                    <small>{sensor.valid ? 'cm' : 'echo'}</small>
-                  </div>
-                </div>
-
-                <p className="sensor-note">
-                  {sensor.valid
-                    ? `The ${side} sensor is currently reading ${Math.round(sensor.distanceCm)} centimeters.`
-                    : `The ${side} sensor does not currently have a clean echo.`}
-                </p>
-              </article>
-            )
-          })}
-        </section>
-
         <section className="hero-column panel">
           <div className="hero-copy">
             <p className="eyebrow">Vest activity</p>
             <div className="hero-summary">
-              <h2>{activeTelemetry ? formatSource(activeTelemetry.output.source) : 'Waiting for telemetry'}</h2>
-              <p>
-                {hazardHeadline
-                  ? `Strongest detected proximity signal: ${hazardHeadline.side} ${hazardHeadline.level.toLowerCase()}.`
-                  : 'Connect to the ESP32 telemetry endpoint to begin the live hardware story.'}
-              </p>
+              <h2>{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Waiting for telemetry'}</h2>
+              <p>{targetDescription}</p>
             </div>
           </div>
 
           <div className="vest-stage">
+            <svg className="vest-silhouette" viewBox="0 0 360 420" aria-hidden="true">
+              <path d="M122 36h116l40 48 28 120-34 168H88L54 204l28-120 40-48Z" />
+              <path d="M144 36v66h72V36" />
+              <path d="M112 112h136" />
+              <path d="M132 148v188" />
+              <path d="M228 148v188" />
+            </svg>
             <div className={`hazard-arc arc-left level-${(activeTelemetry?.hazards.left.level ?? 'SAFE').toLowerCase()}`} />
             <div className={`hazard-arc arc-back level-${(activeTelemetry?.hazards.back.level ?? 'SAFE').toLowerCase()}`} />
             <div className={`hazard-arc arc-right level-${(activeTelemetry?.hazards.right.level ?? 'SAFE').toLowerCase()}`} />
 
             <div className="vest-shell-body">
-              <div className={`motor-zone motor-front ${heroState.front ? `pattern-${activeTelemetry?.output.pattern ?? 'none'} active` : ''}`}>
-                FRONT
+              <div className={`motor-zone motor-front-left ${heroState.frontLeft ? 'command-active' : ''}`}>
+                <span>FRONT LEFT</span>
+                <small>{heroState.frontLeft ? 'active cue' : 'guide'}</small>
               </div>
-              <div className={`motor-zone motor-left ${heroState.left ? `pattern-${activeTelemetry?.output.pattern ?? 'none'} active` : ''}`}>
-                LEFT
+              <div
+                className={`motor-zone motor-front ${heroState.front ? `pattern-${activeTelemetry?.output.pattern ?? 'none'} active` : ''} command-zone`}
+              >
+                <span>FRONT</span>
+                <small>{heroState.front ? 'active cue' : 'guide'}</small>
+              </div>
+              <div className={`motor-zone motor-front-right ${heroState.frontRight ? 'command-active' : ''}`}>
+                <span>FRONT RIGHT</span>
+                <small>{heroState.frontRight ? 'active cue' : 'guide'}</small>
+              </div>
+              <div
+                className={`motor-zone motor-left hazard-${(activeTelemetry?.hazards.left.level ?? 'SAFE').toLowerCase()} ${heroState.left ? 'active' : ''}`}
+              >
+                <span>LEFT</span>
+                <small>{formatSensorCaption(activeTelemetry?.hazards.left ?? null)}</small>
               </div>
               <div className="vest-core">
                 <span className="vest-title">{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Offline'}</span>
                 <strong>{activeTelemetry ? describeMotorMask(activeTelemetry.output.motorMask) : 'No motors'}</strong>
                 <small>{activeTelemetry ? `${activeTelemetry.output.intensity}/255 intensity` : 'No telemetry yet'}</small>
               </div>
-              <div className={`motor-zone motor-right ${heroState.right ? `pattern-${activeTelemetry?.output.pattern ?? 'none'} active` : ''}`}>
-                RIGHT
+              <div
+                className={`motor-zone motor-right hazard-${(activeTelemetry?.hazards.right.level ?? 'SAFE').toLowerCase()} ${heroState.right ? 'active' : ''}`}
+              >
+                <span>RIGHT</span>
+                <small>{formatSensorCaption(activeTelemetry?.hazards.right ?? null)}</small>
               </div>
-              <div className={`motor-zone motor-back ${heroState.back ? `pattern-${activeTelemetry?.output.pattern ?? 'none'} active` : ''}`}>
-                BACK
+              <div
+                className={`motor-zone motor-back hazard-${(activeTelemetry?.hazards.back.level ?? 'SAFE').toLowerCase()} ${heroState.back ? 'active' : ''}`}
+              >
+                <span>BACK</span>
+                <small>{formatSensorCaption(activeTelemetry?.hazards.back ?? null)}</small>
               </div>
             </div>
+          </div>
+
+          <div className="target-chip">
+            <span className="target-chip-label">Detected target</span>
+            <strong>{targetDescription}</strong>
           </div>
         </section>
 
         <section className="output-column">
           <article className="panel output-card">
             <p className="eyebrow">Current output</p>
-            <h2>{activeTelemetry ? describeMotorMask(activeTelemetry.output.motorMask) : 'No live output'}</h2>
-            <p className="output-description">
-              {activeTelemetry
-                ? `${formatSource(activeTelemetry.output.source)} with ${formatPattern(activeTelemetry.output.pattern)} pattern.`
-                : 'The dashboard is ready, but it has not received a telemetry packet yet.'}
-            </p>
+            <h2 className="output-sentence">{outputSentence}</h2>
+            <p className="output-description">This sentence updates live to explain the vest response in plain English.</p>
 
             <div className="metric-grid">
+              <div className="metric-card">
+                <span className="metric-label">Mode</span>
+                <strong>{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Offline'}</strong>
+              </div>
+              <div className="metric-card">
+                <span className="metric-label">Active motors</span>
+                <strong>{activeTelemetry ? describeMotorMask(activeTelemetry.output.motorMask) : 'None'}</strong>
+              </div>
               <div className="metric-card">
                 <span className="metric-label">Pattern</span>
                 <strong>{activeTelemetry ? formatPattern(activeTelemetry.output.pattern) : 'none'}</strong>
@@ -408,35 +513,45 @@ function App() {
                 <span className="metric-label">Intensity</span>
                 <strong>{activeTelemetry ? activeTelemetry.output.intensity : 0}</strong>
               </div>
-              <div className="metric-card">
-                <span className="metric-label">Phone command</span>
-                <strong>{activeTelemetry?.command.active ? formatLabel(activeTelemetry.command.direction) : 'Idle'}</strong>
-              </div>
-              <div className="metric-card">
-                <span className="metric-label">TTL remaining</span>
-                <strong>{activeTelemetry ? `${activeTelemetry.command.ttlRemainingMs} ms` : '0 ms'}</strong>
-              </div>
             </div>
           </article>
 
-          <article className="panel mode-card">
-            <p className="eyebrow">Interpretation</p>
-            <ul className="mode-insights">
+          <article className="panel decision-card">
+            <p className="eyebrow">Decision ladder</p>
+            <ul className="decision-ladder">
               <li>
-                <span className="insight-label">Awareness gate</span>
-                <span className="insight-value">{ultrasonicEnabled ? 'Hazards can drive motors' : 'Hazards are visual only'}</span>
+                <div className={`decision-step ${winningLayer === 'danger' ? 'step-winning' : ''}`}>
+                  <span className="decision-rank">1</span>
+                  <div>
+                    <strong>Danger override</strong>
+                    <p>Closest danger obstacle takes full priority and immediately drives haptics.</p>
+                  </div>
+                </div>
               </li>
               <li>
-                <span className="insight-label">BLE link</span>
-                <span className="insight-value">{activeTelemetry?.bleConnected ? 'Phone link is active' : 'Phone link is idle'}</span>
+                <div className={`decision-step ${winningLayer === 'guidance' ? 'step-winning' : ''}`}>
+                  <span className="decision-rank">2</span>
+                  <div>
+                    <strong>Guidance cue</strong>
+                    <p>Directional guidance wins whenever danger is not active.</p>
+                  </div>
+                </div>
               </li>
               <li>
-                <span className="insight-label">Uptime</span>
-                <span className="insight-value">
-                  {activeTelemetry ? `${Math.floor(activeTelemetry.uptimeMs / 1000)} s` : '--'}
-                </span>
+                <div className={`decision-step ${winningLayer === 'caution' ? 'step-winning' : ''}`}>
+                  <span className="decision-rank">3</span>
+                  <div>
+                    <strong>Caution warning</strong>
+                    <p>Caution obstacles pulse only when danger and guidance are both inactive.</p>
+                  </div>
+                </div>
               </li>
             </ul>
+            <p className="decision-note">
+              {winningLayer === 'none'
+                ? 'No layer is currently winning because the vest is idle.'
+                : `${formatLabel(winningLayer)} is currently winning the arbitration.`}
+            </p>
           </article>
         </section>
       </section>

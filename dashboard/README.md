@@ -23,7 +23,7 @@ Open the local Vite URL in Chrome or Edge.
 1. Flash the latest `NavVest/NavVest.ino`
 2. Open Serial Monitor at `115200`
 3. Join the laptop to the ESP32 Wi-Fi network:
-   - SSID: `NavVest`
+   - SSID: `Generic32`
    - Password: `StarkHacks2026`
 4. Wait for a line like:
    `WIFI: telemetry server ready at http://192.168.4.1/telemetry`
