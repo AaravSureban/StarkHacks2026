@@ -11,6 +11,7 @@ static const uint32_t SERIAL_BAUD_RATE = 115200;
 static const uint32_t SENSOR_SETTLE_MS = 75;
 static const uint32_t LOOP_INTERVAL_MS = 500;
 static const uint32_t ECHO_TIMEOUT_US = 25000;
+static const float MAX_VALID_DISTANCE_CM = 200.0f;
 
 struct SensorPins {
   const char *name;
@@ -39,7 +40,7 @@ float readDistanceCm(const SensorPins &sensor) {
   }
 
   float distanceCm = static_cast<float>(durationUs) / 58.0f;
-  if (distanceCm <= 0.0f || distanceCm > 400.0f) {
+  if (distanceCm <= 0.0f || distanceCm > MAX_VALID_DISTANCE_CM) {
     return -1.0f;
   }
 
@@ -70,6 +71,7 @@ void setup() {
 
   Serial.println("NavVest ultrasonic test starting...");
   Serial.println("Reading back, left, and right sensors.");
+  Serial.println("Distances beyond 200 cm are treated as out of range.");
 }
 
 void loop() {

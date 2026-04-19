@@ -1,4 +1,4 @@
-# NavVest ESP32 Firmware — Codex Prompt
+# NavVest ESP32 Firmware - Codex Prompt
 
 You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware for a wearable assistive navigation vest called NavVest. This must compile and run correctly first try with no placeholders or TODOs.
 
@@ -14,7 +14,7 @@ You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware f
 
 ### Motor Pins (via 2x L298N H-bridges)
 
-#### L298N #1 — Back + Front
+#### L298N #1 - Back + Front
 | Pin | GPIO |
 |-----|------|
 | BACK_ENA (PWM) | GPIO4 |
@@ -24,7 +24,7 @@ You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware f
 | FRONT_IN4 | GPIO15 |
 | FRONT_ENB (PWM) | GPIO16 |
 
-#### L298N #2 — Left + Right
+#### L298N #2 - Left + Right
 | Pin | GPIO |
 |-----|------|
 | LEFT_ENA (PWM) | GPIO18 |
@@ -57,10 +57,10 @@ You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware f
 
 ## Libraries
 
-- **NimBLE-Arduino** — BLE
-- **ArduinoJson** — JSON parsing
-- **Adafruit NeoPixel** — RGB LED
-- **ESP32 LEDC** — PWM motor control
+- **NimBLE-Arduino** - BLE
+- **ArduinoJson** - JSON parsing
+- **Adafruit NeoPixel** - RGB LED
+- **ESP32 LEDC** - PWM motor control
 
 ---
 
@@ -69,8 +69,8 @@ You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware f
 | Field | Value |
 |-------|-------|
 | Device name | `NavVest` |
-| Service UUID | `4fafc201-1fb5-459e-8fcc-c5c9c331914b` |
-| Command Characteristic UUID | `beb5483e-36e1-4688-b7f5-ea07361b26a8` |
+| Service UUID | `7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000` |
+| Command Characteristic UUID | `7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000` |
 | Characteristic properties | WRITE and WRITE WITHOUT RESPONSE |
 | Payload format | UTF-8 JSON string |
 | ESP32 role | BLE peripheral / server |
@@ -85,7 +85,7 @@ The iPhone sends commands in this format:
 ```json
 {
   "mode": "object_nav",
-  "direction": "left",
+  "direction": "front-left",
   "intensity": 180,
   "pattern": "steady",
   "priority": 2,
@@ -101,12 +101,12 @@ The iPhone sends commands in this format:
 | Field | Type | Valid Values |
 |-------|------|-------------|
 | mode | string | `manual`, `awareness`, `object_nav`, `find_search`, `gps_nav` |
-| direction | string | `left`, `front`, `right`, `back`, `none` |
-| intensity | int | 0–255 |
+| direction | string | `left`, `front`, `right`, `back`, `front-left`, `front-right`, `back-left`, `back-right`, `none` |
+| intensity | int | 0-255 |
 | pattern | string | `steady`, `slow_pulse`, `fast_pulse`, `none` |
-| priority | int | 0–3 |
-| ttlMs | int | 1–1000 |
-| confidence | float | 0.0–1.0 |
+| priority | int | 0-3 |
+| ttlMs | int | 1-1000 |
+| confidence | float | 0.0-1.0 |
 | distance | float or null | >= 0.0 or null |
 | seq | int | incrementing, reject duplicates |
 
@@ -128,6 +128,10 @@ enum Direction {
   DIR_FRONT,
   DIR_RIGHT,
   DIR_BACK,
+  DIR_FRONT_LEFT,
+  DIR_FRONT_RIGHT,
+  DIR_BACK_LEFT,
+  DIR_BACK_RIGHT,
   DIR_NONE
 };
 
@@ -169,7 +173,7 @@ struct HazardState {
   HazardLevel back;   // has ultrasonic sensor
   HazardLevel left;   // has ultrasonic sensor
   HazardLevel right;  // has ultrasonic sensor
-  // NOTE: no front ultrasonic — iPhone camera/LiDAR handles front
+  // NOTE: no front ultrasonic - iPhone camera/LiDAR handles front
   float backCm;
   float leftCm;
   float rightCm;
@@ -192,11 +196,11 @@ Reject the command if any of the following are true:
 
 - `mode` is not a known value
 - `direction` is not a known value
-- `intensity` is outside 0–255
+- `intensity` is outside 0-255
 - `pattern` is not a known value
-- `priority` is outside 0–3
+- `priority` is outside 0-3
 - `ttlMs` is <= 0 or > 1000
-- `confidence` is outside 0.0–1.0
+- `confidence` is outside 0.0-1.0
 - `distance` is negative (null is allowed)
 - `seq` is a duplicate of the last accepted seq (reset allowed after reconnect)
 
@@ -212,7 +216,7 @@ On rejection:
 - Read all 3 sensors (back, left, right) non-blocking using `millis()`
 - Convert echo pulse timing to distance in cm
 - Use 5-sample moving average to filter noise
-- Ignore readings of 0 or > 400cm as invalid
+- Ignore readings of 0 or > 400 cm as invalid
 
 ### Hazard Thresholds
 | Level | Distance |
@@ -222,11 +226,12 @@ On rejection:
 | SAFE | > 100 cm |
 
 ### Important
-- There is **NO front ultrasonic sensor** — the iPhone camera and LiDAR handle front perception
+- There is **NO front ultrasonic sensor** - the iPhone camera and LiDAR handle front perception
 - Back ultrasonic can override back motor
 - Left ultrasonic can override left motor
 - Right ultrasonic can override right motor
-- Front motor can **only** be triggered by iPhone commands
+- Front motor can **only** be triggered by iPhone commands, including diagonal front directions
+- Diagonal directions are iPhone-only outputs and are never produced by ultrasonic overrides
 
 ---
 
@@ -237,7 +242,7 @@ Priority order (highest to lowest):
 1. Ultrasonic DANGER (back first, then left, then right)
 2. Ultrasonic CAUTION (back first, then left, then right)
 3. Active valid iPhone command
-4. Idle — all motors off
+4. Idle - all motors off
 
 ### Ultrasonic Override Outputs
 | Level | Intensity | Pattern |
@@ -263,19 +268,25 @@ Priority order (highest to lowest):
 | DIR_FRONT | FRONT_ENB / FRONT_IN3 / FRONT_IN4 |
 | DIR_RIGHT | RIGHT_ENB / RIGHT_IN3 / RIGHT_IN4 |
 | DIR_BACK | BACK_ENA / BACK_IN1 / BACK_IN2 |
+| DIR_FRONT_LEFT | FRONT + LEFT together |
+| DIR_FRONT_RIGHT | FRONT + RIGHT together |
+| DIR_BACK_LEFT | BACK + LEFT together |
+| DIR_BACK_RIGHT | BACK + RIGHT together |
 | DIR_NONE | All motors off |
 
 ### Pattern Timing (use millis(), never delay())
 | Pattern | Behavior |
 |---------|----------|
 | PATTERN_STEADY | Continuous at given intensity |
-| PATTERN_SLOW_PULSE | 500ms on, 500ms off |
-| PATTERN_FAST_PULSE | 150ms on, 150ms off |
+| PATTERN_SLOW_PULSE | 500 ms on, 500 ms off |
+| PATTERN_FAST_PULSE | 150 ms on, 150 ms off |
 | PATTERN_NONE | All motors off |
 
 ### Motor Rules
-- Turn ALL motors off before activating any single motor
-- Only ONE motor may be active at a time — enforce this strictly
+- Turn ALL motors off before activating any new motor set
+- Cardinal directions activate exactly one motor
+- Diagonal iPhone directions activate exactly two motors: the paired cardinal motors
+- Ultrasonic overrides always activate exactly one motor
 - All motors off on startup
 - All motors off when idle
 
@@ -285,7 +296,7 @@ Priority order (highest to lowest):
 
 - Every loop iteration check if active iPhone command has expired using `millis()`
 - If expired, clear it immediately
-- On BLE disconnect, let active command expire naturally via TTL — do not force clear
+- On BLE disconnect, let active command expire naturally via TTL - do not force clear
 - Do not keep motors running after TTL expires with no new command arriving
 
 ---
@@ -329,12 +340,12 @@ loop():
 
 ## Serial Debug Logs
 
-Print every 500ms in this format:
+Print every 500 ms in this format:
 
 ```
-BLE: connected | seq=42 | cmd: mode=object_nav dir=left intensity=180 ttl=300ms remaining=187ms
+BLE: connected | seq=42 | cmd: mode=object_nav dir=front-left intensity=180 ttl=300ms remaining=187ms
 US: back=142cm SAFE | left=80cm CAUTION | right=200cm SAFE
-OUTPUT: source=ultrasonic_caution dir=left intensity=180 pattern=slow_pulse
+OUTPUT: source=iphone dir=front-left intensity=180 pattern=steady
 ```
 
 ---
@@ -344,15 +355,16 @@ OUTPUT: source=ultrasonic_caution dir=left intensity=180 pattern=slow_pulse
 - All motors off by default on startup
 - All motors off if no valid command and no hazard
 - All motors off if BLE disconnects and TTL expires
-- Never crash on malformed JSON — wrap all parsing in error handling
-- Never activate more than one motor simultaneously
+- Never crash on malformed JSON - wrap all parsing in error handling
+- Never activate more than two motors simultaneously
+- Two active motors are only allowed for the four diagonal iPhone directions
 - Log every rejected command with the specific reason
 
 ---
 
 ## Code Structure
 
-Organize into these clearly commented sections in one single .ino file:
+Organize into these clearly commented sections in one single `.ino` file:
 
 1. Pin definitions and constants
 2. Enums and structs

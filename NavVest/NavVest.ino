@@ -10,8 +10,8 @@
 // ============================================================================
 
 static const char *BLE_DEVICE_NAME = "NavVest";
-static const char *BLE_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-static const char *BLE_COMMAND_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+static const char *BLE_SERVICE_UUID = "7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000";
+static const char *BLE_COMMAND_CHAR_UUID = "7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000";
 
 static const uint8_t BACK_ENA_PIN = 4;
 static const uint8_t BACK_IN1_PIN = 5;
@@ -53,6 +53,7 @@ static const uint32_t FAST_PULSE_OFF_MS = 150;
 
 static const uint8_t ULTRASONIC_SENSOR_COUNT = 3;
 static const uint8_t ULTRASONIC_MOVING_AVERAGE_WINDOW = 5;
+static const uint8_t ULTRASONIC_INVALID_CLEAR_COUNT = 3;
 static const uint32_t ULTRASONIC_START_INTERVAL_MS = 60;
 static const uint32_t ULTRASONIC_TRIGGER_LOW_US = 2;
 static const uint32_t ULTRASONIC_TRIGGER_HIGH_US = 10;
@@ -95,6 +96,10 @@ enum Direction {
   DIR_FRONT,
   DIR_RIGHT,
   DIR_BACK,
+  DIR_FRONT_LEFT,
+  DIR_FRONT_RIGHT,
+  DIR_BACK_LEFT,
+  DIR_BACK_RIGHT,
   DIR_NONE
 };
 
@@ -141,6 +146,7 @@ struct HapticOutput {
   Pattern pattern;
   uint8_t priority;
   const char *source;
+  uint8_t motorMask;
 };
 
 enum UltrasonicMeasurementState {
@@ -167,6 +173,7 @@ struct UltrasonicSensorState {
   uint32_t measurementStartedUs;
   uint32_t echoRiseUs;
   float pendingDistanceCm;
+  uint8_t invalidReadStreak;
 };
 
 struct PendingCommandSlot {
@@ -191,14 +198,15 @@ portMUX_TYPE gCommandMux = portMUX_INITIALIZER_UNLOCKED;
 PendingCommandSlot gPendingCommand = {};
 VestCommand gActiveCommand = {};
 bool gHasActiveCommand = false;
+Mode gCurrentMode = AWARENESS;
 
 bool gSessionHasAcceptedSeq = false;
 uint32_t gLastAcceptedSeq = 0;
 
 UltrasonicSensorState gUltrasonicSensors[ULTRASONIC_SENSOR_COUNT] = {
-    {"back", ULTRASONIC_BACK_TRIG_PIN, ULTRASONIC_BACK_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f},
-    {"left", ULTRASONIC_LEFT_TRIG_PIN, ULTRASONIC_LEFT_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f},
-    {"right", ULTRASONIC_RIGHT_TRIG_PIN, ULTRASONIC_RIGHT_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f},
+    {"back", ULTRASONIC_BACK_TRIG_PIN, ULTRASONIC_BACK_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f, 0},
+    {"left", ULTRASONIC_LEFT_TRIG_PIN, ULTRASONIC_LEFT_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f, 0},
+    {"right", ULTRASONIC_RIGHT_TRIG_PIN, ULTRASONIC_RIGHT_ECHO_PIN, {0}, 0, 0, false, 0.0f, US_IDLE, 0, 0, 0, 0.0f, 0},
 };
 
 int8_t gActiveUltrasonicIndex = -1;
@@ -208,12 +216,12 @@ uint32_t gLastUltrasonicStartMs = 0;
 uint32_t gLastLogMs = 0;
 uint32_t gPatternPhaseStartedMs = 0;
 
-Direction gCurrentlyEnergizedDirection = DIR_NONE;
+uint8_t gCurrentMotorMask = 0;
 uint8_t gCurrentMotorDuty = 0;
 
 HazardState gCurrentHazardState = {SAFE, SAFE, SAFE, 0.0f, 0.0f, 0.0f};
-HapticOutput gCurrentOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle"};
-HapticOutput gLastAppliedOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle"};
+HapticOutput gCurrentOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", 0};
+HapticOutput gLastAppliedOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", 0};
 
 // ============================================================================
 // 4. BLE server and callbacks
@@ -252,6 +260,8 @@ void NavVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo 
   (void)reason;
 
   gBleConnected = false;
+  gCurrentMode = AWARENESS;
+  clearActiveCommand();
 
   portENTER_CRITICAL(&gCommandMux);
   gSessionHasAcceptedSeq = false;
@@ -318,6 +328,22 @@ bool parseDirectionString(const char *value, Direction &direction) {
   }
   if (strcmp(value, "back") == 0) {
     direction = DIR_BACK;
+    return true;
+  }
+  if (strcmp(value, "front-left") == 0 || strcmp(value, "front_left") == 0) {
+    direction = DIR_FRONT_LEFT;
+    return true;
+  }
+  if (strcmp(value, "front-right") == 0 || strcmp(value, "front_right") == 0) {
+    direction = DIR_FRONT_RIGHT;
+    return true;
+  }
+  if (strcmp(value, "back-left") == 0 || strcmp(value, "back_left") == 0) {
+    direction = DIR_BACK_LEFT;
+    return true;
+  }
+  if (strcmp(value, "back-right") == 0 || strcmp(value, "back_right") == 0) {
+    direction = DIR_BACK_RIGHT;
     return true;
   }
   if (strcmp(value, "none") == 0) {
@@ -594,6 +620,7 @@ void consumePendingCommand(uint32_t now) {
 
   newCommand.receivedAtMs = now;
   newCommand.expiresAtMs = now + newCommand.ttlMs;
+  gCurrentMode = newCommand.mode;
   gActiveCommand = newCommand;
   gHasActiveCommand = true;
 }
@@ -643,11 +670,32 @@ void updateUltrasonicAverage(UltrasonicSensorState &sensor, float distanceCm) {
 
   sensor.averagedCm = sum / static_cast<float>(sensor.sampleCount);
   sensor.hasValidAverage = true;
+  sensor.invalidReadStreak = 0;
+}
+
+void clearUltrasonicAverage(UltrasonicSensorState &sensor) {
+  sensor.sampleCount = 0;
+  sensor.nextSampleIndex = 0;
+  sensor.hasValidAverage = false;
+  sensor.averagedCm = 0.0f;
+  for (uint8_t i = 0; i < ULTRASONIC_MOVING_AVERAGE_WINDOW; ++i) {
+    sensor.samples[i] = 0.0f;
+  }
 }
 
 void finalizeUltrasonicMeasurement(UltrasonicSensorState &sensor, bool hasValidReading, float distanceCm) {
   if (hasValidReading && distanceCm > 0.0f && distanceCm <= ULTRASONIC_MAX_VALID_CM) {
     updateUltrasonicAverage(sensor, distanceCm);
+  } else {
+    if (sensor.invalidReadStreak < 255) {
+      sensor.invalidReadStreak++;
+    }
+
+    // Clear stale hazard data after several bad reads so one noisy close hit
+    // cannot latch the sensor in danger forever.
+    if (sensor.invalidReadStreak >= ULTRASONIC_INVALID_CLEAR_COUNT) {
+      clearUltrasonicAverage(sensor);
+    }
   }
 
   sensor.state = US_IDLE;
@@ -774,8 +822,76 @@ HazardState getHazardState() {
 // 8. Arbitration engine
 // ============================================================================
 
+static const uint8_t MOTOR_MASK_NONE = 0x00;
+static const uint8_t MOTOR_MASK_BACK = 0x01;
+static const uint8_t MOTOR_MASK_FRONT = 0x02;
+static const uint8_t MOTOR_MASK_LEFT = 0x04;
+static const uint8_t MOTOR_MASK_RIGHT = 0x08;
+
+uint8_t motorMaskForDirection(Direction direction) {
+  switch (direction) {
+    case DIR_BACK:
+      return MOTOR_MASK_BACK;
+    case DIR_FRONT:
+      return MOTOR_MASK_FRONT;
+    case DIR_LEFT:
+      return MOTOR_MASK_LEFT;
+    case DIR_RIGHT:
+      return MOTOR_MASK_RIGHT;
+    case DIR_FRONT_LEFT:
+      return MOTOR_MASK_FRONT | MOTOR_MASK_LEFT;
+    case DIR_FRONT_RIGHT:
+      return MOTOR_MASK_FRONT | MOTOR_MASK_RIGHT;
+    case DIR_BACK_LEFT:
+      return MOTOR_MASK_BACK | MOTOR_MASK_LEFT;
+    case DIR_BACK_RIGHT:
+      return MOTOR_MASK_BACK | MOTOR_MASK_RIGHT;
+    case DIR_NONE:
+    default:
+      return MOTOR_MASK_NONE;
+  }
+}
+
+Direction singleDirectionForMotorMask(uint8_t motorMask) {
+  switch (motorMask) {
+    case MOTOR_MASK_BACK:
+      return DIR_BACK;
+    case MOTOR_MASK_FRONT:
+      return DIR_FRONT;
+    case MOTOR_MASK_LEFT:
+      return DIR_LEFT;
+    case MOTOR_MASK_RIGHT:
+      return DIR_RIGHT;
+    case MOTOR_MASK_FRONT | MOTOR_MASK_LEFT:
+      return DIR_FRONT_LEFT;
+    case MOTOR_MASK_FRONT | MOTOR_MASK_RIGHT:
+      return DIR_FRONT_RIGHT;
+    case MOTOR_MASK_BACK | MOTOR_MASK_LEFT:
+      return DIR_BACK_LEFT;
+    case MOTOR_MASK_BACK | MOTOR_MASK_RIGHT:
+      return DIR_BACK_RIGHT;
+    case MOTOR_MASK_NONE:
+    default:
+      return DIR_NONE;
+  }
+}
+
+uint8_t ultrasonicMotorMaskForLevel(const HazardState &hazardState, HazardLevel level) {
+  uint8_t motorMask = MOTOR_MASK_NONE;
+  if (hazardState.back == level) {
+    motorMask |= MOTOR_MASK_BACK;
+  }
+  if (hazardState.left == level) {
+    motorMask |= MOTOR_MASK_LEFT;
+  }
+  if (hazardState.right == level) {
+    motorMask |= MOTOR_MASK_RIGHT;
+  }
+  return motorMask;
+}
+
 HapticOutput makeIdleOutput() {
-  HapticOutput output = {DIR_NONE, 0, PATTERN_NONE, 0, "idle"};
+  HapticOutput output = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", MOTOR_MASK_NONE};
   return output;
 }
 
@@ -784,29 +900,33 @@ bool hasEffectivePhoneOutput() {
          gActiveCommand.intensity > 0;
 }
 
-HapticOutput arbitrate(const HazardState &hazardState) {
-  if (hazardState.back == DANGER) {
-    return {DIR_BACK, 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger"};
-  }
-  if (hazardState.left == DANGER) {
-    return {DIR_LEFT, 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger"};
-  }
-  if (hazardState.right == DANGER) {
-    return {DIR_RIGHT, 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger"};
+bool isUltrasonicAwarenessActive() {
+  return gCurrentMode == AWARENESS;
+}
+
+HazardState getEffectiveHazardStateForAwareness(const HazardState &rawHazardState) {
+  if (isUltrasonicAwarenessActive()) {
+    return rawHazardState;
   }
 
-  if (hazardState.back == CAUTION) {
-    return {DIR_BACK, 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution"};
+  HazardState disabledHazards = {SAFE, SAFE, SAFE, rawHazardState.backCm, rawHazardState.leftCm, rawHazardState.rightCm};
+  return disabledHazards;
+}
+
+HapticOutput arbitrate(const HazardState &hazardState) {
+  uint8_t dangerMask = ultrasonicMotorMaskForLevel(hazardState, DANGER);
+  if (dangerMask != MOTOR_MASK_NONE) {
+    return {singleDirectionForMotorMask(dangerMask), 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger", dangerMask};
   }
-  if (hazardState.left == CAUTION) {
-    return {DIR_LEFT, 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution"};
-  }
-  if (hazardState.right == CAUTION) {
-    return {DIR_RIGHT, 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution"};
+
+  uint8_t cautionMask = ultrasonicMotorMaskForLevel(hazardState, CAUTION);
+  if (cautionMask != MOTOR_MASK_NONE) {
+    return {singleDirectionForMotorMask(cautionMask), 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution", cautionMask};
   }
 
   if (hasEffectivePhoneOutput()) {
-    return {gActiveCommand.direction, gActiveCommand.intensity, gActiveCommand.pattern, gActiveCommand.priority, "iphone"};
+    return {gActiveCommand.direction, gActiveCommand.intensity, gActiveCommand.pattern, gActiveCommand.priority, "iphone",
+            motorMaskForDirection(gActiveCommand.direction)};
   }
 
   return makeIdleOutput();
@@ -833,70 +953,70 @@ void allMotorsOff() {
   ledcWriteChannel(MOTOR_PWM_CHANNEL_LEFT, 0);
   ledcWriteChannel(MOTOR_PWM_CHANNEL_RIGHT, 0);
   writeMotorDirectionPinsLow();
-  gCurrentlyEnergizedDirection = DIR_NONE;
+  gCurrentMotorMask = MOTOR_MASK_NONE;
   gCurrentMotorDuty = 0;
 }
 
-void setDirectionPinsForMotor(Direction direction) {
-  writeMotorDirectionPinsLow();
-
+void enableCardinalMotor(Direction direction, uint8_t intensity) {
   switch (direction) {
     case DIR_BACK:
       digitalWrite(BACK_IN1_PIN, HIGH);
       digitalWrite(BACK_IN2_PIN, LOW);
+      ledcWriteChannel(MOTOR_PWM_CHANNEL_BACK, intensity);
       break;
     case DIR_FRONT:
       digitalWrite(FRONT_IN3_PIN, HIGH);
       digitalWrite(FRONT_IN4_PIN, LOW);
+      ledcWriteChannel(MOTOR_PWM_CHANNEL_FRONT, intensity);
       break;
     case DIR_LEFT:
       digitalWrite(LEFT_IN1_PIN, HIGH);
       digitalWrite(LEFT_IN2_PIN, LOW);
+      ledcWriteChannel(MOTOR_PWM_CHANNEL_LEFT, intensity);
       break;
     case DIR_RIGHT:
       digitalWrite(RIGHT_IN3_PIN, HIGH);
       digitalWrite(RIGHT_IN4_PIN, LOW);
+      ledcWriteChannel(MOTOR_PWM_CHANNEL_RIGHT, intensity);
       break;
+    case DIR_FRONT_LEFT:
+    case DIR_FRONT_RIGHT:
+    case DIR_BACK_LEFT:
+    case DIR_BACK_RIGHT:
     case DIR_NONE:
     default:
       break;
   }
 }
 
-uint8_t pwmChannelForDirection(Direction direction) {
-  switch (direction) {
-    case DIR_BACK:
-      return MOTOR_PWM_CHANNEL_BACK;
-    case DIR_FRONT:
-      return MOTOR_PWM_CHANNEL_FRONT;
-    case DIR_LEFT:
-      return MOTOR_PWM_CHANNEL_LEFT;
-    case DIR_RIGHT:
-      return MOTOR_PWM_CHANNEL_RIGHT;
-    case DIR_NONE:
-    default:
-      return MOTOR_PWM_CHANNEL_BACK;
-  }
-}
-
-void driveSingleMotor(Direction direction, uint8_t intensity) {
-  if (direction == DIR_NONE || intensity == 0) {
+void driveMotorsForMask(uint8_t motorMask, uint8_t intensity) {
+  if (motorMask == MOTOR_MASK_NONE || intensity == 0) {
     allMotorsOff();
     return;
   }
 
-  if (gCurrentlyEnergizedDirection != direction) {
-    allMotorsOff();
-    setDirectionPinsForMotor(direction);
+  allMotorsOff();
+
+  if ((motorMask & MOTOR_MASK_BACK) != 0) {
+    enableCardinalMotor(DIR_BACK, intensity);
+  }
+  if ((motorMask & MOTOR_MASK_FRONT) != 0) {
+    enableCardinalMotor(DIR_FRONT, intensity);
+  }
+  if ((motorMask & MOTOR_MASK_LEFT) != 0) {
+    enableCardinalMotor(DIR_LEFT, intensity);
+  }
+  if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
+    enableCardinalMotor(DIR_RIGHT, intensity);
   }
 
-  ledcWriteChannel(pwmChannelForDirection(direction), intensity);
-  gCurrentlyEnergizedDirection = direction;
+  gCurrentMotorMask = motorMask;
   gCurrentMotorDuty = intensity;
 }
 
 bool hapticOutputEquals(const HapticOutput &a, const HapticOutput &b) {
-  return a.direction == b.direction && a.intensity == b.intensity && a.pattern == b.pattern && a.priority == b.priority;
+  return a.direction == b.direction && a.intensity == b.intensity && a.pattern == b.pattern && a.priority == b.priority &&
+         a.motorMask == b.motorMask;
 }
 
 bool shouldPatternBeOn(const HapticOutput &output, uint32_t now) {
@@ -928,13 +1048,13 @@ void applyHapticOutput(const HapticOutput &output, uint32_t now) {
     gLastAppliedOutput = output;
   }
 
-  if (output.direction == DIR_NONE || output.pattern == PATTERN_NONE || output.intensity == 0) {
+  if (output.motorMask == MOTOR_MASK_NONE || output.pattern == PATTERN_NONE || output.intensity == 0) {
     allMotorsOff();
     return;
   }
 
   if (shouldPatternBeOn(output, now)) {
-    driveSingleMotor(output.direction, output.intensity);
+    driveMotorsForMask(output.motorMask, output.intensity);
   } else {
     allMotorsOff();
   }
@@ -999,6 +1119,14 @@ const char *directionToString(Direction direction) {
       return "right";
     case DIR_BACK:
       return "back";
+    case DIR_FRONT_LEFT:
+      return "front-left";
+    case DIR_FRONT_RIGHT:
+      return "front-right";
+    case DIR_BACK_LEFT:
+      return "back-left";
+    case DIR_BACK_RIGHT:
+      return "back-right";
     case DIR_NONE:
       return "none";
     default:
@@ -1034,6 +1162,40 @@ const char *hazardLevelToString(HazardLevel hazardLevel) {
   }
 }
 
+void printMotorMaskLabel(uint8_t motorMask) {
+  if (motorMask == MOTOR_MASK_NONE) {
+    Serial.print("none");
+    return;
+  }
+
+  bool printedOne = false;
+
+  if ((motorMask & MOTOR_MASK_BACK) != 0) {
+    Serial.print("back");
+    printedOne = true;
+  }
+  if ((motorMask & MOTOR_MASK_FRONT) != 0) {
+    if (printedOne) {
+      Serial.print("+");
+    }
+    Serial.print("front");
+    printedOne = true;
+  }
+  if ((motorMask & MOTOR_MASK_LEFT) != 0) {
+    if (printedOne) {
+      Serial.print("+");
+    }
+    Serial.print("left");
+    printedOne = true;
+  }
+  if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
+    if (printedOne) {
+      Serial.print("+");
+    }
+    Serial.print("right");
+  }
+}
+
 void printDistanceField(bool hasDistance, float distanceCm) {
   if (!hasDistance) {
     Serial.print("n/a");
@@ -1052,11 +1214,12 @@ void printDebugLog(uint32_t now) {
 
   Serial.print("BLE: ");
   Serial.print(gBleConnected ? "connected" : "advertising");
+  Serial.print(" | mode=");
+  Serial.print(modeToString(gCurrentMode));
   Serial.print(" | seq=");
   if (gHasActiveCommand) {
     Serial.print(gActiveCommand.seq);
-    Serial.print(" | cmd: mode=");
-    Serial.print(modeToString(gActiveCommand.mode));
+    Serial.print(" | cmd:");
     Serial.print(" dir=");
     Serial.print(directionToString(gActiveCommand.direction));
     Serial.print(" intensity=");
@@ -1086,7 +1249,7 @@ void printDebugLog(uint32_t now) {
   Serial.print("OUTPUT: source=");
   Serial.print(gCurrentOutput.source);
   Serial.print(" dir=");
-  Serial.print(directionToString(gCurrentOutput.direction));
+  printMotorMaskLabel(gCurrentOutput.motorMask);
   Serial.print(" intensity=");
   Serial.print(gCurrentOutput.intensity);
   Serial.print(" pattern=");
@@ -1145,6 +1308,7 @@ void initUltrasonics() {
     gUltrasonicSensors[i].measurementStartedUs = 0;
     gUltrasonicSensors[i].echoRiseUs = 0;
     gUltrasonicSensors[i].pendingDistanceCm = 0.0f;
+    gUltrasonicSensors[i].invalidReadStreak = 0;
   }
   gActiveUltrasonicIndex = -1;
   gNextUltrasonicIndex = 0;
@@ -1193,6 +1357,7 @@ void setup() {
   initLEDC();
   initUltrasonics();
   initBLE();
+  gCurrentMode = AWARENESS;
   clearActiveCommand();
   gCurrentHazardState = getHazardState();
   gCurrentOutput = makeIdleOutput();
@@ -1207,8 +1372,9 @@ void loop() {
   consumePendingCommand(now);
   expireCommandIfNeeded(now);
   gCurrentHazardState = getHazardState();
-  gCurrentOutput = arbitrate(gCurrentHazardState);
+  HazardState effectiveHazardState = getEffectiveHazardStateForAwareness(gCurrentHazardState);
+  gCurrentOutput = arbitrate(effectiveHazardState);
   applyHapticOutput(gCurrentOutput, now);
-  updateNeoPixel(gCurrentHazardState, gBleConnected);
+  updateNeoPixel(effectiveHazardState, gBleConnected);
   printDebugLog(now);
 }

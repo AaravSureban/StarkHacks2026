@@ -4,8 +4,8 @@
 #include <string>
 
 static const char *BLE_DEVICE_NAME = "NavVest";
-static const char *BLE_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-static const char *BLE_COMMAND_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+static const char *BLE_SERVICE_UUID = "7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000";
+static const char *BLE_COMMAND_CHAR_UUID = "7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000";
 
 static const uint8_t NEOPIXEL_PIN = 38;
 static const uint8_t NEOPIXEL_COUNT = 1;
