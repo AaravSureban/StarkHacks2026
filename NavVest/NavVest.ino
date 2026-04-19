@@ -210,10 +210,12 @@ portMUX_TYPE gCommandMux = portMUX_INITIALIZER_UNLOCKED;
 
 PendingCommandSlot gPendingCommand = {};
 VestCommand gActiveCommand = {};
+VestCommand gLastAcceptedCommand = {};
 bool gHasActiveCommand = false;
 Mode gCurrentMode = AWARENESS;
 
 bool gSessionHasAcceptedSeq = false;
+bool gHasLastAcceptedCommand = false;
 uint32_t gLastAcceptedSeq = 0;
 
 UltrasonicSensorState gUltrasonicSensors[ULTRASONIC_SENSOR_COUNT] = {
@@ -286,6 +288,8 @@ void NavVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo 
 
   portENTER_CRITICAL(&gCommandMux);
   gSessionHasAcceptedSeq = false;
+  gHasLastAcceptedCommand = false;
+  gLastAcceptedCommand = {};
   gLastAcceptedSeq = 0;
   portEXIT_CRITICAL(&gCommandMux);
 
@@ -560,11 +564,6 @@ bool parseAndValidateCommandPayload(const uint8_t *payload, size_t length, VestC
   }
   commandOut.seq = static_cast<uint32_t>(seqValue);
 
-  if (hasLastSeq && commandOut.seq == lastSeq) {
-    setRejectReason(reason, reasonSize, "duplicate seq");
-    return false;
-  }
-
   commandOut.receivedAtMs = 0;
   commandOut.expiresAtMs = 0;
   return true;
@@ -575,11 +574,19 @@ void logRejectedCommand(const char *reason) {
   Serial.println(reason);
 }
 
+bool commandsMatchForDedup(const VestCommand &a, const VestCommand &b) {
+  return a.mode == b.mode && a.direction == b.direction && a.intensity == b.intensity && a.pattern == b.pattern &&
+         a.priority == b.priority && a.ttlMs == b.ttlMs && a.confidence == b.confidence && a.hasDistance == b.hasDistance &&
+         a.distanceMeters == b.distanceMeters && a.seq == b.seq;
+}
+
 void stagePendingCommand(const VestCommand &command) {
   portENTER_CRITICAL(&gCommandMux);
   gPendingCommand.command = command;
   gPendingCommand.hasCommand = true;
   gSessionHasAcceptedSeq = true;
+  gHasLastAcceptedCommand = true;
+  gLastAcceptedCommand = command;
   gLastAcceptedSeq = command.seq;
   newCommandAvailable = true;
   portEXIT_CRITICAL(&gCommandMux);
@@ -598,15 +605,28 @@ void NavVestCommandCallbacks::onWrite(NimBLECharacteristic *pCharacteristic, Nim
   char rejectReason[REJECTION_REASON_SIZE] = {0};
   bool hasLastSeq = false;
   uint32_t lastSeq = 0;
+  bool hasLastAcceptedCommand = false;
+  VestCommand lastAcceptedCommand = {};
 
   portENTER_CRITICAL(&gCommandMux);
   hasLastSeq = gSessionHasAcceptedSeq;
   lastSeq = gLastAcceptedSeq;
+  hasLastAcceptedCommand = gHasLastAcceptedCommand;
+  lastAcceptedCommand = gLastAcceptedCommand;
   portEXIT_CRITICAL(&gCommandMux);
 
   if (!parseAndValidateCommandPayload(reinterpret_cast<const uint8_t *>(value.data()), value.size(), parsedCommand, hasLastSeq, lastSeq,
                                       rejectReason, sizeof(rejectReason))) {
     logRejectedCommand(rejectReason);
+    return;
+  }
+
+  if (hasLastSeq && parsedCommand.seq == lastSeq) {
+    if (hasLastAcceptedCommand && commandsMatchForDedup(parsedCommand, lastAcceptedCommand)) {
+      return;
+    }
+
+    logRejectedCommand("duplicate seq");
     return;
   }
 
@@ -628,6 +648,10 @@ void clearActiveCommand() {
 
 bool isModeSwitchOnlyCommand(const VestCommand &command) {
   return command.direction == DIR_NONE && command.intensity == 0 && command.pattern == PATTERN_NONE;
+}
+
+bool isFindAndGoMode(Mode mode) {
+  return mode == FIND_SEARCH || mode == OBJECT_NAV || mode == FIND_SCAN_COMPLETE;
 }
 
 Direction normalizeDirectionForMode(Mode mode, Direction direction) {
@@ -1232,6 +1256,27 @@ const char *modeToString(Mode mode) {
   }
 }
 
+const char *modeGroupToString(Mode mode, bool findScanCompleteEffectActive) {
+  if (findScanCompleteEffectActive || isFindAndGoMode(mode)) {
+    return "find_and_go";
+  }
+
+  switch (mode) {
+    case MANUAL:
+      return "manual";
+    case AWARENESS:
+      return "awareness";
+    case GPS_NAV:
+      return "gps_nav";
+    case OBJECT_NAV:
+    case FIND_SEARCH:
+    case FIND_SCAN_COMPLETE:
+      return "find_and_go";
+    default:
+      return "unknown";
+  }
+}
+
 const char *directionToString(Direction direction) {
   switch (direction) {
     case DIR_LEFT:
@@ -1418,6 +1463,8 @@ void handleTelemetryRequest() {
 
   doc["version"] = 1;
   doc["mode"] = modeToString(gCurrentMode);
+  doc["modeGroup"] = modeGroupToString(gCurrentMode, gFindScanCompleteEffectActive);
+  doc["findAndGoActive"] = isFindAndGoMode(gCurrentMode) || gFindScanCompleteEffectActive;
   doc["bleConnected"] = gBleConnected;
   doc["awarenessEnabled"] = (gCurrentMode == AWARENESS);
 

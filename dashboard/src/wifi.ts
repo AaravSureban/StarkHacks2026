@@ -1,4 +1,4 @@
-import type { Direction, HazardLevel, MotorZone, Pattern, TelemetryPayload } from './types'
+import type { Direction, HazardLevel, ModeGroup, MotorZone, Pattern, TelemetryPayload } from './types'
 
 const TELEMETRY_POLL_INTERVAL_MS = 250
 
@@ -12,6 +12,18 @@ function parseMode(value: unknown): TelemetryPayload['mode'] {
     case 'awareness':
     case 'object_nav':
     case 'find_search':
+    case 'gps_nav':
+      return value
+    default:
+      return 'manual'
+  }
+}
+
+function parseModeGroup(value: unknown): ModeGroup {
+  switch (value) {
+    case 'manual':
+    case 'awareness':
+    case 'find_and_go':
     case 'gps_nav':
       return value
     default:
@@ -98,6 +110,8 @@ function normalizeTelemetry(value: unknown): TelemetryPayload {
   return {
     version: typeof payload.version === 'number' ? payload.version : 1,
     mode: parseMode(payload.mode),
+    modeGroup: parseModeGroup(payload.modeGroup),
+    findAndGoActive: payload.findAndGoActive === true,
     bleConnected: payload.bleConnected === true,
     hazards: {
       back: parseSensor(hazards.back),

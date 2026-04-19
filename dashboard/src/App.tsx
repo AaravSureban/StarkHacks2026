@@ -14,6 +14,14 @@ function formatMode(mode: string) {
     .join(' ')
 }
 
+function displayMode(telemetry: TelemetryPayload | null) {
+  if (!telemetry) {
+    return 'Unknown'
+  }
+
+  return formatMode(telemetry.modeGroup)
+}
+
 function formatLabel(value: string) {
   return value
     .split(/[_-]/)
@@ -226,10 +234,10 @@ function App() {
     setStatusMessage(`Live telemetry streaming from ${baseUrl.replace(/\/$/, '')}/telemetry`)
 
     if (!previousTelemetry) {
-      pushEvent('Feed online', `${formatMode(nextTelemetry.mode)} data stream active`)
+      pushEvent('Feed online', `${displayMode(nextTelemetry)} data stream active`)
     } else {
-      if (previousTelemetry.mode !== nextTelemetry.mode) {
-        pushEvent('Mode changed', `${formatMode(previousTelemetry.mode)} -> ${formatMode(nextTelemetry.mode)}`)
+      if (previousTelemetry.modeGroup !== nextTelemetry.modeGroup) {
+        pushEvent('Mode changed', `${displayMode(previousTelemetry)} -> ${displayMode(nextTelemetry)}`)
       }
 
       for (const side of SENSOR_SIDES) {
@@ -381,7 +389,7 @@ function App() {
           </div>
           <div className="status-card">
             <span className="status-label">Mode</span>
-            <strong className="status-value">{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Unknown'}</strong>
+            <strong className="status-value">{displayMode(activeTelemetry)}</strong>
             <span className="status-detail">
               {ultrasonicEnabled ? 'Ultrasonic awareness enabled' : 'Ultrasonic alerts muted'}
             </span>
@@ -426,7 +434,7 @@ function App() {
           <div className="hero-copy">
             <p className="eyebrow">Vest activity</p>
             <div className="hero-summary">
-              <h2>{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Waiting for telemetry'}</h2>
+              <h2>{activeTelemetry ? displayMode(activeTelemetry) : 'Waiting for telemetry'}</h2>
               <p>{targetDescription}</p>
             </div>
           </div>
@@ -465,7 +473,7 @@ function App() {
                 <small>{formatSensorCaption(activeTelemetry?.hazards.left ?? null)}</small>
               </div>
               <div className="vest-core">
-                <span className="vest-title">{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Offline'}</span>
+                <span className="vest-title">{activeTelemetry ? displayMode(activeTelemetry) : 'Offline'}</span>
                 <strong>{activeTelemetry ? describeMotorMask(activeTelemetry.output.motorMask) : 'No motors'}</strong>
                 <small>{activeTelemetry ? `${activeTelemetry.output.intensity}/255 intensity` : 'No telemetry yet'}</small>
               </div>
@@ -499,7 +507,7 @@ function App() {
             <div className="metric-grid">
               <div className="metric-card">
                 <span className="metric-label">Mode</span>
-                <strong>{activeTelemetry ? formatMode(activeTelemetry.mode) : 'Offline'}</strong>
+                <strong>{activeTelemetry ? displayMode(activeTelemetry) : 'Offline'}</strong>
               </div>
               <div className="metric-card">
                 <span className="metric-label">Active motors</span>

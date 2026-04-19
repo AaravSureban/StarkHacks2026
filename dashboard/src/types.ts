@@ -1,4 +1,5 @@
 export type Mode = 'manual' | 'awareness' | 'object_nav' | 'find_search' | 'gps_nav'
+export type ModeGroup = 'manual' | 'awareness' | 'find_and_go' | 'gps_nav'
 
 export type Direction =
   | 'left'
@@ -28,6 +29,8 @@ export interface TelemetrySensorState {
 export interface TelemetryPayload {
   version: number
   mode: Mode
+  modeGroup: ModeGroup
+  findAndGoActive: boolean
   bleConnected: boolean
   hazards: Record<'back' | 'left' | 'right', TelemetrySensorState>
   output: {
