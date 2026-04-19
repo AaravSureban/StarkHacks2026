@@ -17,7 +17,7 @@ export type HazardLevel = 'SAFE' | 'CAUTION' | 'DANGER'
 
 export type MotorZone = 'front' | 'back' | 'left' | 'right'
 
-export type ConnectionState = 'disconnected' | 'connecting' | 'live' | 'demo'
+export type ConnectionState = 'disconnected' | 'connecting' | 'live'
 
 export interface TelemetrySensorState {
   valid: boolean

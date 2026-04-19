@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <NimBLEDevice.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <esp32-hal-ledc.h>
 #include <string>
 
@@ -12,6 +14,9 @@
 static const char *BLE_DEVICE_NAME = "NavVest";
 static const char *BLE_SERVICE_UUID = "7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000";
 static const char *BLE_COMMAND_CHAR_UUID = "7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000";
+static const char *WIFI_AP_SSID = "NavVest";
+static const char *WIFI_AP_PASSWORD = "StarkHacks2026";
+static const char *WIFI_HOSTNAME = "navvest";
 
 static const uint8_t BACK_ENA_PIN = 4;
 static const uint8_t BACK_IN1_PIN = 5;
@@ -63,8 +68,10 @@ static const float DANGER_THRESHOLD_CM = 50.0f;
 static const float CAUTION_THRESHOLD_CM = 100.0f;
 
 static const size_t JSON_DOC_CAPACITY = 512;
+static const size_t TELEMETRY_JSON_DOC_CAPACITY = 768;
 static const size_t REJECTION_REASON_SIZE = 96;
 static const uint16_t BLE_COMMAND_MAX_LEN = 256;
+static const uint16_t WIFI_TELEMETRY_PORT = 80;
 
 static const uint8_t COLOR_RED_R = 255;
 static const uint8_t COLOR_RED_G = 0;
@@ -189,6 +196,7 @@ Adafruit_NeoPixel gNeoPixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 NimBLEServer *gBleServer = nullptr;
 NimBLECharacteristic *gCommandCharacteristic = nullptr;
+WebServer gTelemetryServer(WIFI_TELEMETRY_PORT);
 
 volatile bool gBleConnected = false;
 volatile bool newCommandAvailable = false;
@@ -218,6 +226,8 @@ uint32_t gPatternPhaseStartedMs = 0;
 
 uint8_t gCurrentMotorMask = 0;
 uint8_t gCurrentMotorDuty = 0;
+bool gTelemetryServerStarted = false;
+bool gWiFiApStarted = false;
 
 HazardState gCurrentHazardState = {SAFE, SAFE, SAFE, 0.0f, 0.0f, 0.0f};
 HapticOutput gCurrentOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", 0};
@@ -1256,6 +1266,141 @@ void printDebugLog(uint32_t now) {
   Serial.println(patternToString(gCurrentOutput.pattern));
 }
 
+void appendTelemetryMotorMask(JsonArray &motorMaskArray, uint8_t motorMask) {
+  if ((motorMask & MOTOR_MASK_FRONT) != 0) {
+    motorMaskArray.add("front");
+  }
+  if ((motorMask & MOTOR_MASK_BACK) != 0) {
+    motorMaskArray.add("back");
+  }
+  if ((motorMask & MOTOR_MASK_LEFT) != 0) {
+    motorMaskArray.add("left");
+  }
+  if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
+    motorMaskArray.add("right");
+  }
+}
+
+void populateTelemetrySensorObject(JsonObject sensorObject, bool valid, float distanceCm, HazardLevel level) {
+  sensorObject["valid"] = valid;
+  sensorObject["distanceCm"] = valid ? static_cast<int>(distanceCm + 0.5f) : 0;
+  sensorObject["level"] = hazardLevelToString(level);
+}
+
+void addTelemetryCorsHeaders() {
+  gTelemetryServer.sendHeader("Access-Control-Allow-Origin", "*");
+  gTelemetryServer.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  gTelemetryServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  gTelemetryServer.sendHeader("Cache-Control", "no-store");
+}
+
+void handleTelemetryOptions() {
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(204);
+}
+
+void handleTelemetryRequest() {
+  StaticJsonDocument<TELEMETRY_JSON_DOC_CAPACITY> doc;
+  uint32_t now = millis();
+
+  doc["version"] = 1;
+  doc["mode"] = modeToString(gCurrentMode);
+  doc["bleConnected"] = gBleConnected;
+  doc["awarenessEnabled"] = (gCurrentMode == AWARENESS);
+
+  JsonObject hazards = doc.createNestedObject("hazards");
+  populateTelemetrySensorObject(hazards.createNestedObject("back"), gUltrasonicSensors[0].hasValidAverage, gCurrentHazardState.backCm,
+                                gCurrentHazardState.back);
+  populateTelemetrySensorObject(hazards.createNestedObject("left"), gUltrasonicSensors[1].hasValidAverage, gCurrentHazardState.leftCm,
+                                gCurrentHazardState.left);
+  populateTelemetrySensorObject(hazards.createNestedObject("right"), gUltrasonicSensors[2].hasValidAverage, gCurrentHazardState.rightCm,
+                                gCurrentHazardState.right);
+
+  JsonObject output = doc.createNestedObject("output");
+  output["source"] = gCurrentOutput.source;
+  JsonArray motorMask = output.createNestedArray("motorMask");
+  appendTelemetryMotorMask(motorMask, gCurrentOutput.motorMask);
+  output["intensity"] = gCurrentOutput.intensity;
+  output["pattern"] = patternToString(gCurrentOutput.pattern);
+
+  JsonObject command = doc.createNestedObject("command");
+  command["active"] = gHasActiveCommand;
+  command["direction"] = directionToString(gHasActiveCommand ? gActiveCommand.direction : DIR_NONE);
+  command["pattern"] = patternToString(gHasActiveCommand ? gActiveCommand.pattern : PATTERN_NONE);
+  command["intensity"] = gHasActiveCommand ? gActiveCommand.intensity : 0;
+  command["ttlRemainingMs"] = getActiveCommandRemainingMs(now);
+  command["seq"] = gHasActiveCommand ? gActiveCommand.seq : 0;
+
+  doc["uptimeMs"] = now;
+  doc["ipAddress"] = WiFi.localIP().toString();
+  doc["hostname"] = WIFI_HOSTNAME;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(200, "application/json", payload);
+}
+
+void handleTelemetryRoot() {
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(200, "text/plain", "NavVest telemetry server is running. Use /telemetry");
+}
+
+void initTelemetryServerRoutes() {
+  gTelemetryServer.on("/", HTTP_GET, handleTelemetryRoot);
+  gTelemetryServer.on("/telemetry", HTTP_GET, handleTelemetryRequest);
+  gTelemetryServer.on("/telemetry", HTTP_OPTIONS, handleTelemetryOptions);
+}
+
+void startTelemetryServerIfNeeded() {
+  if (gTelemetryServerStarted) {
+    return;
+  }
+
+  initTelemetryServerRoutes();
+  gTelemetryServer.begin();
+  gTelemetryServerStarted = true;
+
+  Serial.print("WIFI: telemetry server ready at http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/telemetry");
+}
+
+void initWiFiTelemetry() {
+  IPAddress apIp(192, 168, 4, 1);
+  IPAddress gateway(192, 168, 4, 1);
+  IPAddress subnet(255, 255, 255, 0);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.softAPConfig(apIp, gateway, subnet);
+
+  if (!WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD)) {
+    Serial.println("WIFI: failed to start access point");
+    return;
+  }
+
+  gWiFiApStarted = true;
+
+  Serial.print("WIFI: AP started, SSID=");
+  Serial.println(WIFI_AP_SSID);
+  Serial.print("WIFI: AP IP=");
+  Serial.println(WiFi.softAPIP());
+}
+
+void updateWiFiTelemetry(uint32_t now) {
+  (void)now;
+
+  if (!gWiFiApStarted) {
+    return;
+  }
+
+  startTelemetryServerIfNeeded();
+  gTelemetryServer.handleClient();
+}
+
 // ============================================================================
 // 12. setup() and loop()
 // ============================================================================
@@ -1357,6 +1502,7 @@ void setup() {
   initLEDC();
   initUltrasonics();
   initBLE();
+  initWiFiTelemetry();
   gCurrentMode = AWARENESS;
   clearActiveCommand();
   gCurrentHazardState = getHazardState();
@@ -1376,5 +1522,6 @@ void loop() {
   gCurrentOutput = arbitrate(effectiveHazardState);
   applyHapticOutput(gCurrentOutput, now);
   updateNeoPixel(effectiveHazardState, gBleConnected);
+  updateWiFiTelemetry(now);
   printDebugLog(now);
 }

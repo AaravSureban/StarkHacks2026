@@ -1,13 +1,13 @@
 # NavVest Judge Dashboard
 
-Local Web Bluetooth dashboard for demoing the NavVest hardware to judges.
+Local Wi-Fi dashboard for demoing the NavVest hardware to judges.
 
 ## What it does
 
-- Connects directly to the vest from Chrome or Edge on `localhost`
-- Visualizes live ultrasonic sensor state and active haptic motor output
-- Preserves the last known live frame after disconnect
-- Includes a built-in Demo Mode for presentation without hardware
+- Polls live telemetry from the ESP32 over its own Wi-Fi access point
+- Keeps the iPhone on BLE control while the dashboard mirrors the vest state
+- Shows sensor state, motor output, mode, and recent events in one place
+- Runs locally in Chrome or Edge on your laptop
 
 ## Local development
 
@@ -18,17 +18,20 @@ npm run dev
 
 Open the local Vite URL in Chrome or Edge.
 
+## Connecting to the ESP32
+
+1. Flash the latest `NavVest/NavVest.ino`
+2. Open Serial Monitor at `115200`
+3. Join the laptop to the ESP32 Wi-Fi network:
+   - SSID: `NavVest`
+   - Password: `StarkHacks2026`
+4. Wait for a line like:
+   `WIFI: telemetry server ready at http://192.168.4.1/telemetry`
+5. Run the dashboard and keep the default `http://192.168.4.1`
+6. Click `Connect`
+
 ## Build
 
 ```bash
 npm run build
 ```
-
-## Firmware requirement
-
-The dashboard expects the vest firmware to expose a telemetry BLE characteristic:
-
-- Service: `7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000`
-- Telemetry characteristic: `7B7E1002-7C6B-4B8F-9E2A-6B5F4F0A1000`
-
-If the characteristic is not present, the app falls back to Demo Mode.

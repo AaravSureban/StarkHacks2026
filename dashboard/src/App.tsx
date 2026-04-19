@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import './App.css'
-import { NoTelemetryCharacteristicError, connectToVest, type BleSession } from './ble'
-import { createDemoTelemetry } from './demo'
-import type {
-  ConnectionState,
-  EventItem,
-  HazardLevel,
-  MotorZone,
-  TelemetryPayload,
-  TelemetrySensorState,
-} from './types'
+import { connectTelemetryPoller, type TelemetryPollerSession } from './wifi'
+import type { ConnectionState, EventItem, HazardLevel, MotorZone, TelemetryPayload, TelemetrySensorState } from './types'
 import { SENSOR_SIDES } from './types'
+
+const DEFAULT_BASE_URL = 'http://192.168.4.1'
+const BASE_URL_STORAGE_KEY = 'navvest-base-url'
 
 function formatMode(mode: string) {
   return mode
     .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function formatLabel(value: string) {
+  return value
+    .split(/[_-]/)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
 }
@@ -51,9 +53,7 @@ function describeMotorMask(motorMask: MotorZone[]) {
     return 'None'
   }
 
-  return motorMask
-    .map((zone) => zone.charAt(0).toUpperCase() + zone.slice(1))
-    .join(' + ')
+  return motorMask.map((zone) => zone.charAt(0).toUpperCase() + zone.slice(1)).join(' + ')
 }
 
 function hazardRank(level: HazardLevel) {
@@ -110,14 +110,12 @@ function App() {
   const [lastUpdateMs, setLastUpdateMs] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [events, setEvents] = useState<EventItem[]>([])
-  const [deviceName, setDeviceName] = useState('NavVest')
-  const [statusMessage, setStatusMessage] = useState('Ready for a live vest connection')
+  const [statusMessage, setStatusMessage] = useState('Enter the ESP32 URL and start live Wi-Fi telemetry.')
+  const [baseUrl, setBaseUrl] = useState(() => window.localStorage.getItem(BASE_URL_STORAGE_KEY) ?? DEFAULT_BASE_URL)
 
-  const sessionRef = useRef<BleSession | null>(null)
-  const demoStartedAtRef = useRef<number | null>(null)
+  const sessionRef = useRef<TelemetryPollerSession | null>(null)
   const previousTelemetryRef = useRef<TelemetryPayload | null>(null)
   const eventIdRef = useRef(0)
-  const hasSeenTelemetryRef = useRef(false)
 
   const pushEvent = (title: string, detail: string) => {
     const timestamp = new Date()
@@ -134,12 +132,13 @@ function App() {
     )
   }
 
-  const absorbTelemetry = (nextTelemetry: TelemetryPayload, transport: ConnectionState) => {
+  const absorbTelemetry = (nextTelemetry: TelemetryPayload) => {
     const previousTelemetry = previousTelemetryRef.current
-    hasSeenTelemetryRef.current = true
 
     setTelemetry(nextTelemetry)
     setLastUpdateMs(Date.now())
+    setConnectionState('live')
+    setStatusMessage(`Live telemetry streaming from ${baseUrl.replace(/\/$/, '')}/telemetry`)
 
     if (!previousTelemetry) {
       pushEvent('Feed online', `${formatMode(nextTelemetry.mode)} data stream active`)
@@ -171,7 +170,6 @@ function App() {
     }
 
     previousTelemetryRef.current = nextTelemetry
-    setConnectionState(transport)
   }
 
   useEffect(() => {
@@ -185,26 +183,8 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (connectionState !== 'demo') {
-      return
-    }
-
-    if (demoStartedAtRef.current === null) {
-      demoStartedAtRef.current = performance.now()
-    }
-
-    const tick = () => {
-      const elapsedMs = performance.now() - (demoStartedAtRef.current ?? performance.now())
-      absorbTelemetry(createDemoTelemetry(elapsedMs), 'demo')
-    }
-
-    tick()
-    const interval = window.setInterval(tick, 250)
-
-    return () => {
-      window.clearInterval(interval)
-    }
-  }, [connectionState])
+    window.localStorage.setItem(BASE_URL_STORAGE_KEY, baseUrl)
+  }, [baseUrl])
 
   const handleDisconnect = async () => {
     const session = sessionRef.current
@@ -216,83 +196,48 @@ function App() {
 
     setConnectionState('disconnected')
     setStatusMessage('Disconnected. Last known vest state is still visible.')
-    pushEvent('Disconnected', 'Vest connection closed')
+    pushEvent('Disconnected', 'Stopped polling the ESP32 telemetry endpoint')
   }
 
   const handleConnect = async () => {
-    if (connectionState === 'connecting') {
-      return
-    }
-
     if (sessionRef.current) {
       await handleDisconnect()
     }
 
-    demoStartedAtRef.current = null
-    hasSeenTelemetryRef.current = false
-    previousTelemetryRef.current = null
-    setTelemetry(null)
-    setLastUpdateMs(null)
     setConnectionState('connecting')
-    setStatusMessage('Opening Bluetooth device picker...')
+    setStatusMessage(`Connecting to ${baseUrl.replace(/\/$/, '')}/telemetry ...`)
+    previousTelemetryRef.current = null
+    setLastUpdateMs(null)
 
     try {
-      const session = await connectToVest(
+      const session = await connectTelemetryPoller(
+        baseUrl,
         (payload) => {
-          setDeviceName(sessionRef.current?.deviceName ?? 'NavVest')
-          setStatusMessage('Live telemetry streaming from the vest')
-          absorbTelemetry(payload, 'live')
+          absorbTelemetry(payload)
         },
-        () => {
-          sessionRef.current = null
-          setConnectionState('disconnected')
-          setStatusMessage('Connection lost. Last known vest data is frozen for reference.')
-          pushEvent('Link lost', 'Bluetooth disconnected unexpectedly')
+        (message) => {
+          if (telemetry) {
+            setConnectionState('disconnected')
+          }
+          setStatusMessage(message)
         },
       )
 
       sessionRef.current = session
-      setDeviceName(session.deviceName)
-      setConnectionState('live')
-      setStatusMessage('Connected. Waiting for the first telemetry packet...')
-      pushEvent('Connected', `Live Bluetooth link established with ${session.deviceName}`)
-
-      window.setTimeout(() => {
-        if (sessionRef.current === session && !hasSeenTelemetryRef.current) {
-          setStatusMessage(
-            'Bluetooth connected, but no telemetry has arrived yet. Make sure the latest NavVest.ino is flashed and Serial Monitor shows BLE: connected.',
-          )
-          pushEvent('No telemetry yet', 'The vest paired, but the dashboard has not received a telemetry packet')
-        }
-      }, 3000)
+      pushEvent('Polling started', `Watching ${baseUrl.replace(/\/$/, '')}/telemetry`)
     } catch (error) {
-      sessionRef.current = null
-
-      if (error instanceof NoTelemetryCharacteristicError) {
-        setStatusMessage('Vest has no telemetry characteristic yet. Showing Demo Mode instead.')
-        pushEvent('Demo fallback', 'Telemetry characteristic missing on the current firmware')
-        demoStartedAtRef.current = performance.now()
-        setConnectionState('demo')
-        return
-      }
-
-      const message = error instanceof Error ? error.message : 'Bluetooth connection failed'
+      const message = error instanceof Error ? error.message : 'Could not connect to the ESP32 telemetry endpoint'
       setConnectionState('disconnected')
       setStatusMessage(message)
       pushEvent('Connection failed', message)
     }
   }
 
-  const handleDemoMode = async () => {
-    if (sessionRef.current) {
-      await handleDisconnect()
+  useEffect(() => {
+    return () => {
+      void sessionRef.current?.disconnect()
     }
-
-    demoStartedAtRef.current = performance.now()
-    setStatusMessage('Demo Mode is generating representative vest activity')
-    pushEvent('Demo Mode', 'Running the judge experience without live hardware')
-    setConnectionState('demo')
-  }
+  }, [])
 
   const activeTelemetry = telemetry
   const freshness = freshnessLabel(lastUpdateMs, nowMs)
@@ -314,10 +259,10 @@ function App() {
       <section className="topbar panel">
         <div className="brand-block">
           <p className="eyebrow">NavVest Judge Dashboard</p>
-          <h1>Live hardware story, one screen.</h1>
+          <h1>Live ESP32 Wi-Fi telemetry.</h1>
           <p className="subtitle">
-            A local Chrome or Edge dashboard that turns BLE telemetry into a clear judge-facing view of
-            the vest&apos;s sensors and haptic responses.
+            Join the ESP32&apos;s `NavVest` Wi-Fi network, keep the iPhone on BLE control, and mirror the vest over the
+            telemetry endpoint.
           </p>
         </div>
 
@@ -325,7 +270,7 @@ function App() {
           <div className="status-card">
             <span className="status-label">Connection</span>
             <strong className={`status-value state-${connectionState}`}>{connectionState}</strong>
-            <span className="status-detail">{deviceName}</span>
+            <span className="status-detail">Polling the ESP32 directly over its own Wi-Fi access point.</span>
           </div>
           <div className="status-card">
             <span className="status-label">Mode</span>
@@ -339,16 +284,29 @@ function App() {
             <strong className="status-value">{freshness}</strong>
             <span className="status-detail">{statusMessage}</span>
           </div>
+          <div className="status-card">
+            <span className="status-label">Endpoint</span>
+            <strong className="status-value endpoint-value">{baseUrl}</strong>
+            <span className="status-detail">Default AP endpoint is `http://192.168.4.1/telemetry`.</span>
+          </div>
           <div className="status-actions">
-            <button className="action-button primary" onClick={handleConnect} disabled={connectionState === 'connecting'}>
-              {connectionState === 'live' ? 'Reconnect Vest' : 'Connect Vest'}
-            </button>
-            <button className="action-button" onClick={handleDemoMode}>
-              Demo Mode
-            </button>
-            <button className="action-button muted" onClick={handleDisconnect} disabled={!sessionRef.current}>
-              Disconnect
-            </button>
+            <label className="endpoint-field">
+              <span>ESP32 URL</span>
+              <input
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder="http://192.168.4.1"
+                spellCheck={false}
+              />
+            </label>
+            <div className="action-row">
+              <button className="action-button primary" onClick={handleConnect} disabled={connectionState === 'connecting'}>
+                {sessionRef.current ? 'Reconnect' : 'Connect'}
+              </button>
+              <button className="action-button muted" onClick={handleDisconnect} disabled={!sessionRef.current}>
+                Disconnect
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -357,7 +315,7 @@ function App() {
         <section className="sensor-column">
           {SENSOR_SIDES.map((side) => {
             const sensor = activeTelemetry?.hazards[side] ?? { valid: false, distanceCm: 0, level: 'SAFE' as HazardLevel }
-            const gaugeValue = sensor.valid ? Math.max(4, Math.min(100, ((400 - sensor.distanceCm) / 400) * 100)) : 4
+            const gaugeValue = sensor.valid ? Math.max(8, Math.min(100, ((400 - sensor.distanceCm) / 400) * 100)) : 8
 
             return (
               <article
@@ -372,6 +330,7 @@ function App() {
                   </div>
                   <span className={`level-pill level-${sensor.level.toLowerCase()}`}>{sensor.level}</span>
                 </div>
+
                 <div className="sensor-meter" aria-hidden="true">
                   <div className="sensor-ring" />
                   <div className="sensor-core">
@@ -379,10 +338,11 @@ function App() {
                     <small>{sensor.valid ? 'cm' : 'echo'}</small>
                   </div>
                 </div>
+
                 <p className="sensor-note">
                   {sensor.valid
-                    ? `The ${side} ultrasonic sensor is currently reading ${Math.round(sensor.distanceCm)} centimeters.`
-                    : `The ${side} ultrasonic sensor does not currently have a clean echo.`}
+                    ? `The ${side} sensor is currently reading ${Math.round(sensor.distanceCm)} centimeters.`
+                    : `The ${side} sensor does not currently have a clean echo.`}
                 </p>
               </article>
             )
@@ -393,11 +353,11 @@ function App() {
           <div className="hero-copy">
             <p className="eyebrow">Vest activity</p>
             <div className="hero-summary">
-              <h2>{activeTelemetry ? formatSource(activeTelemetry.output.source) : 'Waiting for signal'}</h2>
+              <h2>{activeTelemetry ? formatSource(activeTelemetry.output.source) : 'Waiting for telemetry'}</h2>
               <p>
                 {hazardHeadline
                   ? `Strongest detected proximity signal: ${hazardHeadline.side} ${hazardHeadline.level.toLowerCase()}.`
-                  : 'Connect the vest or run Demo Mode to populate the live hardware story.'}
+                  : 'Connect to the ESP32 telemetry endpoint to begin the live hardware story.'}
               </p>
             </div>
           </div>
@@ -450,7 +410,7 @@ function App() {
               </div>
               <div className="metric-card">
                 <span className="metric-label">Phone command</span>
-                <strong>{activeTelemetry?.command.active ? 'Active' : 'Idle'}</strong>
+                <strong>{activeTelemetry?.command.active ? formatLabel(activeTelemetry.command.direction) : 'Idle'}</strong>
               </div>
               <div className="metric-card">
                 <span className="metric-label">TTL remaining</span>
@@ -468,7 +428,7 @@ function App() {
               </li>
               <li>
                 <span className="insight-label">BLE link</span>
-                <span className="insight-value">{activeTelemetry?.bleConnected ? 'Vest is connected' : 'Vest is advertising or offline'}</span>
+                <span className="insight-value">{activeTelemetry?.bleConnected ? 'Phone link is active' : 'Phone link is idle'}</span>
               </li>
               <li>
                 <span className="insight-label">Uptime</span>
@@ -484,7 +444,7 @@ function App() {
       <section className="event-strip panel">
         <div className="event-strip-header">
           <p className="eyebrow">Recent events</p>
-          <span className="event-strip-note">The most recent five state changes stay visible for judges.</span>
+          <span className="event-strip-note">The most recent five live telemetry changes stay visible for judges.</span>
         </div>
         <div className="event-list">
           {events.length > 0 ? (
@@ -498,7 +458,7 @@ function App() {
           ) : (
             <article className="event-card placeholder">
               <strong>No events yet</strong>
-              <p>Connect the vest or start Demo Mode to begin the live hardware narrative.</p>
+              <p>Connect to the ESP32 telemetry URL to begin the live hardware narrative.</p>
             </article>
           )}
         </div>
