@@ -125,7 +125,7 @@ void setup() {
   initLEDC();
 
   Serial.println();
-  Serial.println("NavVest motor test starting...");
+  Serial.println("VisionVest motor test starting...");
   Serial.println("Expected order: BACK -> FRONT -> LEFT -> RIGHT");
 }
 

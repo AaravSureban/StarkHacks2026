@@ -3,7 +3,7 @@
 #include <NimBLEDevice.h>
 #include <string>
 
-static const char *BLE_DEVICE_NAME = "NavVest";
+static const char *BLE_DEVICE_NAME = "VisionVest";
 static const char *BLE_SERVICE_UUID = "7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000";
 static const char *BLE_COMMAND_CHAR_UUID = "7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000";
 

@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <NimBLEDevice.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <esp32-hal-ledc.h>
 #include <string>
 
@@ -9,9 +11,12 @@
 // 1. Pin definitions and constants
 // ============================================================================
 
-static const char *BLE_DEVICE_NAME = "NavVest";
+static const char *BLE_DEVICE_NAME = "VisionVest";
 static const char *BLE_SERVICE_UUID = "7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000";
 static const char *BLE_COMMAND_CHAR_UUID = "7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000";
+static const char *WIFI_AP_SSID = "Generic32";
+static const char *WIFI_AP_PASSWORD = "StarkHacks2026";
+static const char *WIFI_HOSTNAME = "navvest";
 
 static const uint8_t BACK_ENA_PIN = 4;
 static const uint8_t BACK_IN1_PIN = 5;
@@ -50,6 +55,9 @@ static const uint32_t SLOW_PULSE_ON_MS = 500;
 static const uint32_t SLOW_PULSE_OFF_MS = 500;
 static const uint32_t FAST_PULSE_ON_MS = 150;
 static const uint32_t FAST_PULSE_OFF_MS = 150;
+static const uint32_t FIND_SCAN_COMPLETE_BUZZ_MS = 2000;
+static const uint8_t FIND_SCAN_COMPLETE_INTENSITY = 255;
+static const uint8_t MOTOR_FULL_PWM = 255;
 
 static const uint8_t ULTRASONIC_SENSOR_COUNT = 3;
 static const uint8_t ULTRASONIC_MOVING_AVERAGE_WINDOW = 5;
@@ -59,12 +67,15 @@ static const uint32_t ULTRASONIC_TRIGGER_LOW_US = 2;
 static const uint32_t ULTRASONIC_TRIGGER_HIGH_US = 10;
 static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 25000;
 static const float ULTRASONIC_MAX_VALID_CM = 400.0f;
-static const float DANGER_THRESHOLD_CM = 50.0f;
-static const float CAUTION_THRESHOLD_CM = 100.0f;
+static const float DANGER_THRESHOLD_CM = 80.0f;
+static const float CAUTION_THRESHOLD_CM = 130.0f;
 
 static const size_t JSON_DOC_CAPACITY = 512;
+static const size_t TELEMETRY_JSON_DOC_CAPACITY = 768;
 static const size_t REJECTION_REASON_SIZE = 96;
 static const uint16_t BLE_COMMAND_MAX_LEN = 256;
+static const uint16_t WIFI_TELEMETRY_PORT = 80;
+static const uint32_t WIFI_HANDLE_CLIENT_INTERVAL_MS = 20;
 
 static const uint8_t COLOR_RED_R = 255;
 static const uint8_t COLOR_RED_G = 0;
@@ -88,6 +99,7 @@ enum Mode {
   AWARENESS,
   OBJECT_NAV,
   FIND_SEARCH,
+  FIND_SCAN_COMPLETE,
   GPS_NAV
 };
 
@@ -189,6 +201,7 @@ Adafruit_NeoPixel gNeoPixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 NimBLEServer *gBleServer = nullptr;
 NimBLECharacteristic *gCommandCharacteristic = nullptr;
+WebServer gTelemetryServer(WIFI_TELEMETRY_PORT);
 
 volatile bool gBleConnected = false;
 volatile bool newCommandAvailable = false;
@@ -197,10 +210,12 @@ portMUX_TYPE gCommandMux = portMUX_INITIALIZER_UNLOCKED;
 
 PendingCommandSlot gPendingCommand = {};
 VestCommand gActiveCommand = {};
+VestCommand gLastAcceptedCommand = {};
 bool gHasActiveCommand = false;
 Mode gCurrentMode = AWARENESS;
 
 bool gSessionHasAcceptedSeq = false;
+bool gHasLastAcceptedCommand = false;
 uint32_t gLastAcceptedSeq = 0;
 
 UltrasonicSensorState gUltrasonicSensors[ULTRASONIC_SENSOR_COUNT] = {
@@ -215,9 +230,15 @@ uint32_t gLastUltrasonicStartMs = 0;
 
 uint32_t gLastLogMs = 0;
 uint32_t gPatternPhaseStartedMs = 0;
+uint32_t gLastWiFiHandleMs = 0;
 
 uint8_t gCurrentMotorMask = 0;
 uint8_t gCurrentMotorDuty = 0;
+bool gTelemetryServerStarted = false;
+bool gWiFiApStarted = false;
+bool gUltrasonicsEnabled = false;
+bool gFindScanCompleteEffectActive = false;
+uint32_t gFindScanCompleteEffectExpiresAtMs = 0;
 
 HazardState gCurrentHazardState = {SAFE, SAFE, SAFE, 0.0f, 0.0f, 0.0f};
 HapticOutput gCurrentOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", 0};
@@ -227,19 +248,19 @@ HapticOutput gLastAppliedOutput = {DIR_NONE, 0, PATTERN_NONE, 0, "idle", 0};
 // 4. BLE server and callbacks
 // ============================================================================
 
-class NavVestServerCallbacks : public NimBLEServerCallbacks {
+class VisionVestServerCallbacks : public NimBLEServerCallbacks {
  public:
   void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override;
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) override;
 };
 
-class NavVestCommandCallbacks : public NimBLECharacteristicCallbacks {
+class VisionVestCommandCallbacks : public NimBLECharacteristicCallbacks {
  public:
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override;
 };
 
-NavVestServerCallbacks gServerCallbacks;
-NavVestCommandCallbacks gCommandCallbacks;
+VisionVestServerCallbacks gServerCallbacks;
+VisionVestCommandCallbacks gCommandCallbacks;
 
 void restartAdvertising() {
   NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
@@ -248,13 +269,13 @@ void restartAdvertising() {
   }
 }
 
-void NavVestServerCallbacks::onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) {
+void VisionVestServerCallbacks::onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) {
   (void)pServer;
   (void)connInfo;
   gBleConnected = true;
 }
 
-void NavVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) {
+void VisionVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) {
   (void)pServer;
   (void)connInfo;
   (void)reason;
@@ -262,9 +283,13 @@ void NavVestServerCallbacks::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo 
   gBleConnected = false;
   gCurrentMode = AWARENESS;
   clearActiveCommand();
+  gFindScanCompleteEffectActive = false;
+  gFindScanCompleteEffectExpiresAtMs = 0;
 
   portENTER_CRITICAL(&gCommandMux);
   gSessionHasAcceptedSeq = false;
+  gHasLastAcceptedCommand = false;
+  gLastAcceptedCommand = {};
   gLastAcceptedSeq = 0;
   portEXIT_CRITICAL(&gCommandMux);
 
@@ -304,6 +329,10 @@ bool parseModeString(const char *value, Mode &mode) {
   }
   if (strcmp(value, "find_search") == 0) {
     mode = FIND_SEARCH;
+    return true;
+  }
+  if (strcmp(value, "find_scan_complete") == 0) {
+    mode = FIND_SCAN_COMPLETE;
     return true;
   }
   if (strcmp(value, "gps_nav") == 0) {
@@ -535,11 +564,6 @@ bool parseAndValidateCommandPayload(const uint8_t *payload, size_t length, VestC
   }
   commandOut.seq = static_cast<uint32_t>(seqValue);
 
-  if (hasLastSeq && commandOut.seq == lastSeq) {
-    setRejectReason(reason, reasonSize, "duplicate seq");
-    return false;
-  }
-
   commandOut.receivedAtMs = 0;
   commandOut.expiresAtMs = 0;
   return true;
@@ -550,17 +574,25 @@ void logRejectedCommand(const char *reason) {
   Serial.println(reason);
 }
 
+bool commandsMatchForDedup(const VestCommand &a, const VestCommand &b) {
+  return a.mode == b.mode && a.direction == b.direction && a.intensity == b.intensity && a.pattern == b.pattern &&
+         a.priority == b.priority && a.ttlMs == b.ttlMs && a.confidence == b.confidence && a.hasDistance == b.hasDistance &&
+         a.distanceMeters == b.distanceMeters && a.seq == b.seq;
+}
+
 void stagePendingCommand(const VestCommand &command) {
   portENTER_CRITICAL(&gCommandMux);
   gPendingCommand.command = command;
   gPendingCommand.hasCommand = true;
   gSessionHasAcceptedSeq = true;
+  gHasLastAcceptedCommand = true;
+  gLastAcceptedCommand = command;
   gLastAcceptedSeq = command.seq;
   newCommandAvailable = true;
   portEXIT_CRITICAL(&gCommandMux);
 }
 
-void NavVestCommandCallbacks::onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) {
+void VisionVestCommandCallbacks::onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) {
   (void)connInfo;
 
   std::string value = pCharacteristic->getValue();
@@ -573,15 +605,28 @@ void NavVestCommandCallbacks::onWrite(NimBLECharacteristic *pCharacteristic, Nim
   char rejectReason[REJECTION_REASON_SIZE] = {0};
   bool hasLastSeq = false;
   uint32_t lastSeq = 0;
+  bool hasLastAcceptedCommand = false;
+  VestCommand lastAcceptedCommand = {};
 
   portENTER_CRITICAL(&gCommandMux);
   hasLastSeq = gSessionHasAcceptedSeq;
   lastSeq = gLastAcceptedSeq;
+  hasLastAcceptedCommand = gHasLastAcceptedCommand;
+  lastAcceptedCommand = gLastAcceptedCommand;
   portEXIT_CRITICAL(&gCommandMux);
 
   if (!parseAndValidateCommandPayload(reinterpret_cast<const uint8_t *>(value.data()), value.size(), parsedCommand, hasLastSeq, lastSeq,
                                       rejectReason, sizeof(rejectReason))) {
     logRejectedCommand(rejectReason);
+    return;
+  }
+
+  if (hasLastSeq && parsedCommand.seq == lastSeq) {
+    if (hasLastAcceptedCommand && commandsMatchForDedup(parsedCommand, lastAcceptedCommand)) {
+      return;
+    }
+
+    logRejectedCommand("duplicate seq");
     return;
   }
 
@@ -599,6 +644,54 @@ bool hasReachedTime(uint32_t now, uint32_t deadline) {
 void clearActiveCommand() {
   gActiveCommand = {};
   gHasActiveCommand = false;
+}
+
+bool isModeSwitchOnlyCommand(const VestCommand &command) {
+  return command.direction == DIR_NONE && command.intensity == 0 && command.pattern == PATTERN_NONE;
+}
+
+bool isFindAndGoMode(Mode mode) {
+  return mode == FIND_SEARCH || mode == OBJECT_NAV || mode == FIND_SCAN_COMPLETE;
+}
+
+Direction normalizeDirectionForMode(Mode mode, Direction direction) {
+  switch (mode) {
+    case FIND_SEARCH:
+    case OBJECT_NAV:
+      switch (direction) {
+        case DIR_FRONT_LEFT:
+        case DIR_BACK_LEFT:
+          return DIR_LEFT;
+        case DIR_FRONT_RIGHT:
+        case DIR_BACK_RIGHT:
+          return DIR_RIGHT;
+        default:
+          return direction;
+      }
+
+    case MANUAL:
+    case AWARENESS:
+    case FIND_SCAN_COMPLETE:
+    case GPS_NAV:
+    default:
+      return direction;
+  }
+}
+
+void triggerFindScanCompleteEffect(uint32_t now) {
+  gFindScanCompleteEffectActive = true;
+  gFindScanCompleteEffectExpiresAtMs = now + FIND_SCAN_COMPLETE_BUZZ_MS;
+}
+
+void expireFindScanCompleteEffectIfNeeded(uint32_t now) {
+  if (!gFindScanCompleteEffectActive) {
+    return;
+  }
+
+  if (hasReachedTime(now, gFindScanCompleteEffectExpiresAtMs)) {
+    gFindScanCompleteEffectActive = false;
+    gFindScanCompleteEffectExpiresAtMs = 0;
+  }
 }
 
 void consumePendingCommand(uint32_t now) {
@@ -620,7 +713,20 @@ void consumePendingCommand(uint32_t now) {
 
   newCommand.receivedAtMs = now;
   newCommand.expiresAtMs = now + newCommand.ttlMs;
+  newCommand.direction = normalizeDirectionForMode(newCommand.mode, newCommand.direction);
+
+  if (newCommand.mode == FIND_SCAN_COMPLETE) {
+    triggerFindScanCompleteEffect(now);
+    return;
+  }
+
   gCurrentMode = newCommand.mode;
+
+  if (isModeSwitchOnlyCommand(newCommand)) {
+    clearActiveCommand();
+    return;
+  }
+
   gActiveCommand = newCommand;
   gHasActiveCommand = true;
 }
@@ -681,6 +787,33 @@ void clearUltrasonicAverage(UltrasonicSensorState &sensor) {
   for (uint8_t i = 0; i < ULTRASONIC_MOVING_AVERAGE_WINDOW; ++i) {
     sensor.samples[i] = 0.0f;
   }
+}
+
+void resetUltrasonicSensorState(UltrasonicSensorState &sensor) {
+  digitalWrite(sensor.trigPin, LOW);
+  clearUltrasonicAverage(sensor);
+  sensor.state = US_IDLE;
+  sensor.stateStartedUs = 0;
+  sensor.measurementStartedUs = 0;
+  sensor.echoRiseUs = 0;
+  sensor.pendingDistanceCm = 0.0f;
+  sensor.invalidReadStreak = 0;
+}
+
+void setUltrasonicsEnabled(bool enabled) {
+  if (gUltrasonicsEnabled == enabled) {
+    return;
+  }
+
+  gUltrasonicsEnabled = enabled;
+
+  for (uint8_t i = 0; i < ULTRASONIC_SENSOR_COUNT; ++i) {
+    resetUltrasonicSensorState(gUltrasonicSensors[i]);
+  }
+
+  gActiveUltrasonicIndex = -1;
+  gNextUltrasonicIndex = 0;
+  gLastUltrasonicStartMs = 0;
 }
 
 void finalizeUltrasonicMeasurement(UltrasonicSensorState &sensor, bool hasValidReading, float distanceCm) {
@@ -774,6 +907,10 @@ void updateActiveUltrasonicSensor(uint32_t nowUs) {
 }
 
 void updateUltrasonics(uint32_t nowMs) {
+  if (!gUltrasonicsEnabled) {
+    return;
+  }
+
   updateActiveUltrasonicSensor(micros());
 
   if (gActiveUltrasonicIndex >= 0) {
@@ -827,6 +964,7 @@ static const uint8_t MOTOR_MASK_BACK = 0x01;
 static const uint8_t MOTOR_MASK_FRONT = 0x02;
 static const uint8_t MOTOR_MASK_LEFT = 0x04;
 static const uint8_t MOTOR_MASK_RIGHT = 0x08;
+static const uint8_t MOTOR_MASK_ALL = MOTOR_MASK_BACK | MOTOR_MASK_FRONT | MOTOR_MASK_LEFT | MOTOR_MASK_RIGHT;
 
 uint8_t motorMaskForDirection(Direction direction) {
   switch (direction) {
@@ -914,19 +1052,23 @@ HazardState getEffectiveHazardStateForAwareness(const HazardState &rawHazardStat
 }
 
 HapticOutput arbitrate(const HazardState &hazardState) {
+  if (gFindScanCompleteEffectActive) {
+    return {DIR_NONE, FIND_SCAN_COMPLETE_INTENSITY, PATTERN_STEADY, 3, "find_scan_complete", MOTOR_MASK_ALL};
+  }
+
   uint8_t dangerMask = ultrasonicMotorMaskForLevel(hazardState, DANGER);
   if (dangerMask != MOTOR_MASK_NONE) {
     return {singleDirectionForMotorMask(dangerMask), 255, PATTERN_FAST_PULSE, 3, "ultrasonic_danger", dangerMask};
   }
 
-  uint8_t cautionMask = ultrasonicMotorMaskForLevel(hazardState, CAUTION);
-  if (cautionMask != MOTOR_MASK_NONE) {
-    return {singleDirectionForMotorMask(cautionMask), 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution", cautionMask};
-  }
-
   if (hasEffectivePhoneOutput()) {
     return {gActiveCommand.direction, gActiveCommand.intensity, gActiveCommand.pattern, gActiveCommand.priority, "iphone",
             motorMaskForDirection(gActiveCommand.direction)};
+  }
+
+  uint8_t cautionMask = ultrasonicMotorMaskForLevel(hazardState, CAUTION);
+  if (cautionMask != MOTOR_MASK_NONE) {
+    return {singleDirectionForMotorMask(cautionMask), 180, PATTERN_SLOW_PULSE, 2, "ultrasonic_caution", cautionMask};
   }
 
   return makeIdleOutput();
@@ -995,23 +1137,26 @@ void driveMotorsForMask(uint8_t motorMask, uint8_t intensity) {
     return;
   }
 
+  // Run all motors at full PWM whenever they are active.
+  uint8_t appliedIntensity = MOTOR_FULL_PWM;
+
   allMotorsOff();
 
   if ((motorMask & MOTOR_MASK_BACK) != 0) {
-    enableCardinalMotor(DIR_BACK, intensity);
+    enableCardinalMotor(DIR_BACK, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_FRONT) != 0) {
-    enableCardinalMotor(DIR_FRONT, intensity);
+    enableCardinalMotor(DIR_FRONT, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_LEFT) != 0) {
-    enableCardinalMotor(DIR_LEFT, intensity);
+    enableCardinalMotor(DIR_LEFT, appliedIntensity);
   }
   if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
-    enableCardinalMotor(DIR_RIGHT, intensity);
+    enableCardinalMotor(DIR_RIGHT, appliedIntensity);
   }
 
   gCurrentMotorMask = motorMask;
-  gCurrentMotorDuty = intensity;
+  gCurrentMotorDuty = appliedIntensity;
 }
 
 bool hapticOutputEquals(const HapticOutput &a, const HapticOutput &b) {
@@ -1102,8 +1247,31 @@ const char *modeToString(Mode mode) {
       return "object_nav";
     case FIND_SEARCH:
       return "find_search";
+    case FIND_SCAN_COMPLETE:
+      return "find_scan_complete";
     case GPS_NAV:
       return "gps_nav";
+    default:
+      return "unknown";
+  }
+}
+
+const char *modeGroupToString(Mode mode, bool findScanCompleteEffectActive) {
+  if (findScanCompleteEffectActive || isFindAndGoMode(mode)) {
+    return "find_and_go";
+  }
+
+  switch (mode) {
+    case MANUAL:
+      return "manual";
+    case AWARENESS:
+      return "awareness";
+    case GPS_NAV:
+      return "gps_nav";
+    case OBJECT_NAV:
+    case FIND_SEARCH:
+    case FIND_SCAN_COMPLETE:
+      return "find_and_go";
     default:
       return "unknown";
   }
@@ -1256,6 +1424,149 @@ void printDebugLog(uint32_t now) {
   Serial.println(patternToString(gCurrentOutput.pattern));
 }
 
+void appendTelemetryMotorMask(JsonArray &motorMaskArray, uint8_t motorMask) {
+  if ((motorMask & MOTOR_MASK_FRONT) != 0) {
+    motorMaskArray.add("front");
+  }
+  if ((motorMask & MOTOR_MASK_BACK) != 0) {
+    motorMaskArray.add("back");
+  }
+  if ((motorMask & MOTOR_MASK_LEFT) != 0) {
+    motorMaskArray.add("left");
+  }
+  if ((motorMask & MOTOR_MASK_RIGHT) != 0) {
+    motorMaskArray.add("right");
+  }
+}
+
+void populateTelemetrySensorObject(JsonObject sensorObject, bool valid, float distanceCm, HazardLevel level) {
+  sensorObject["valid"] = valid;
+  sensorObject["distanceCm"] = valid ? static_cast<int>(distanceCm + 0.5f) : 0;
+  sensorObject["level"] = hazardLevelToString(level);
+}
+
+void addTelemetryCorsHeaders() {
+  gTelemetryServer.sendHeader("Access-Control-Allow-Origin", "*");
+  gTelemetryServer.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  gTelemetryServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  gTelemetryServer.sendHeader("Cache-Control", "no-store");
+}
+
+void handleTelemetryOptions() {
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(204);
+}
+
+void handleTelemetryRequest() {
+  StaticJsonDocument<TELEMETRY_JSON_DOC_CAPACITY> doc;
+  uint32_t now = millis();
+
+  doc["version"] = 1;
+  doc["mode"] = modeToString(gCurrentMode);
+  doc["modeGroup"] = modeGroupToString(gCurrentMode, gFindScanCompleteEffectActive);
+  doc["findAndGoActive"] = isFindAndGoMode(gCurrentMode) || gFindScanCompleteEffectActive;
+  doc["bleConnected"] = gBleConnected;
+  doc["awarenessEnabled"] = (gCurrentMode == AWARENESS);
+
+  JsonObject hazards = doc.createNestedObject("hazards");
+  populateTelemetrySensorObject(hazards.createNestedObject("back"), gUltrasonicSensors[0].hasValidAverage, gCurrentHazardState.backCm,
+                                gCurrentHazardState.back);
+  populateTelemetrySensorObject(hazards.createNestedObject("left"), gUltrasonicSensors[1].hasValidAverage, gCurrentHazardState.leftCm,
+                                gCurrentHazardState.left);
+  populateTelemetrySensorObject(hazards.createNestedObject("right"), gUltrasonicSensors[2].hasValidAverage, gCurrentHazardState.rightCm,
+                                gCurrentHazardState.right);
+
+  JsonObject output = doc.createNestedObject("output");
+  output["source"] = gCurrentOutput.source;
+  JsonArray motorMask = output.createNestedArray("motorMask");
+  appendTelemetryMotorMask(motorMask, gCurrentOutput.motorMask);
+  output["intensity"] = gCurrentOutput.intensity;
+  output["pattern"] = patternToString(gCurrentOutput.pattern);
+
+  JsonObject command = doc.createNestedObject("command");
+  command["active"] = gHasActiveCommand;
+  command["direction"] = directionToString(gHasActiveCommand ? gActiveCommand.direction : DIR_NONE);
+  command["pattern"] = patternToString(gHasActiveCommand ? gActiveCommand.pattern : PATTERN_NONE);
+  command["intensity"] = gHasActiveCommand ? gActiveCommand.intensity : 0;
+  command["ttlRemainingMs"] = getActiveCommandRemainingMs(now);
+  command["seq"] = gHasActiveCommand ? gActiveCommand.seq : 0;
+
+  doc["uptimeMs"] = now;
+  doc["ipAddress"] = WiFi.localIP().toString();
+  doc["hostname"] = WIFI_HOSTNAME;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(200, "application/json", payload);
+}
+
+void handleTelemetryRoot() {
+  addTelemetryCorsHeaders();
+  gTelemetryServer.send(200, "text/plain", "VisionVest telemetry server is running. Use /telemetry");
+}
+
+void initTelemetryServerRoutes() {
+  gTelemetryServer.on("/", HTTP_GET, handleTelemetryRoot);
+  gTelemetryServer.on("/telemetry", HTTP_GET, handleTelemetryRequest);
+  gTelemetryServer.on("/telemetry", HTTP_OPTIONS, handleTelemetryOptions);
+}
+
+void startTelemetryServerIfNeeded() {
+  if (gTelemetryServerStarted) {
+    return;
+  }
+
+  initTelemetryServerRoutes();
+  gTelemetryServer.begin();
+  gTelemetryServerStarted = true;
+
+  Serial.print("WIFI: telemetry server ready at http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/telemetry");
+}
+
+void initWiFiTelemetry() {
+  IPAddress apIp(192, 168, 4, 1);
+  IPAddress gateway(192, 168, 4, 1);
+  IPAddress subnet(255, 255, 255, 0);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.softAPConfig(apIp, gateway, subnet);
+
+  if (!WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD)) {
+    Serial.println("WIFI: failed to start access point");
+    return;
+  }
+
+  gWiFiApStarted = true;
+
+  Serial.print("WIFI: AP started, SSID=");
+  Serial.println(WIFI_AP_SSID);
+  Serial.print("WIFI: AP IP=");
+  Serial.println(WiFi.softAPIP());
+}
+
+void updateWiFiTelemetry(uint32_t now) {
+  if (!gWiFiApStarted) {
+    return;
+  }
+
+  startTelemetryServerIfNeeded();
+
+  // Service HTTP often enough for the dashboard, but not on every loop
+  // iteration so ultrasonic timing stays responsive.
+  if (!hasReachedTime(now, gLastWiFiHandleMs + WIFI_HANDLE_CLIENT_INTERVAL_MS)) {
+    return;
+  }
+
+  gLastWiFiHandleMs = now;
+  gTelemetryServer.handleClient();
+}
+
 // ============================================================================
 // 12. setup() and loop()
 // ============================================================================
@@ -1357,7 +1668,9 @@ void setup() {
   initLEDC();
   initUltrasonics();
   initBLE();
+  initWiFiTelemetry();
   gCurrentMode = AWARENESS;
+  setUltrasonicsEnabled(isUltrasonicAwarenessActive());
   clearActiveCommand();
   gCurrentHazardState = getHazardState();
   gCurrentOutput = makeIdleOutput();
@@ -1368,13 +1681,16 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
-  updateUltrasonics(now);
   consumePendingCommand(now);
   expireCommandIfNeeded(now);
+  expireFindScanCompleteEffectIfNeeded(now);
+  setUltrasonicsEnabled(isUltrasonicAwarenessActive());
+  updateUltrasonics(now);
   gCurrentHazardState = getHazardState();
   HazardState effectiveHazardState = getEffectiveHazardStateForAwareness(gCurrentHazardState);
   gCurrentOutput = arbitrate(effectiveHazardState);
   applyHapticOutput(gCurrentOutput, now);
   updateNeoPixel(effectiveHazardState, gBleConnected);
+  updateWiFiTelemetry(now);
   printDebugLog(now);
 }

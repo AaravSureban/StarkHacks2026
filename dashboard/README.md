@@ -1,6 +1,6 @@
-# NavVest Judge Dashboard
+# VisionVest Judge Dashboard
 
-Local Wi-Fi dashboard for demoing the NavVest hardware to judges.
+Local Wi-Fi dashboard for demoing the VisionVest hardware to judges.
 
 ## What it does
 
@@ -20,7 +20,7 @@ Open the local Vite URL in Chrome or Edge.
 
 ## Connecting to the ESP32
 
-1. Flash the latest `NavVest/NavVest.ino`
+1. Flash the latest `esp32-firmware/VisionVest/VisionVest.ino`
 2. Open Serial Monitor at `115200`
 3. Join the laptop to the ESP32 Wi-Fi network:
    - SSID: `Generic32`

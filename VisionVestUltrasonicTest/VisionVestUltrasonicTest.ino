@@ -69,7 +69,7 @@ void setup() {
     digitalWrite(gSensors[i].trigPin, LOW);
   }
 
-  Serial.println("NavVest ultrasonic test starting...");
+  Serial.println("VisionVest ultrasonic test starting...");
   Serial.println("Reading back, left, and right sensors.");
   Serial.println("Distances beyond 200 cm are treated as out of range.");
 }

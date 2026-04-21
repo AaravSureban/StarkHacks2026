@@ -377,7 +377,7 @@ function App() {
     <main className={`dashboard-shell connection-${connectionState}`}>
       <section className="topbar panel">
         <div className="brand-block">
-          <p className="eyebrow">NavVest Judge Dashboard</p>
+          <p className="eyebrow">VisionVest Judge Dashboard</p>
           <h1>Live ESP32 Wi-Fi telemetry.</h1>
         </div>
 

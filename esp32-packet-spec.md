@@ -1,10 +1,10 @@
 # ESP32 BLE Packet Spec
 
-This document describes the JSON packets the ESP32 in `NavVest/NavVest.ino` currently expects to receive over BLE, and when each packet should be sent.
+This document describes the JSON packets the ESP32 in `esp32-firmware/VisionVest/VisionVest.ino` currently expects to receive over BLE, and when each packet should be sent.
 
 ## Transport
 
-- BLE device name: `NavVest`
+- BLE device name: `VisionVest`
 - BLE service UUID: `7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000`
 - BLE command characteristic UUID: `7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000`
 - One BLE write should contain one complete JSON object

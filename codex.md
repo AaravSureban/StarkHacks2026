@@ -1,6 +1,6 @@
-# NavVest ESP32 Firmware - Codex Prompt
+# VisionVest ESP32 Firmware - Codex Prompt
 
-You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware for a wearable assistive navigation vest called NavVest. This must compile and run correctly first try with no placeholders or TODOs.
+You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware for a wearable assistive navigation vest called VisionVest. This must compile and run correctly first try with no placeholders or TODOs.
 
 ---
 
@@ -68,7 +68,7 @@ You are an embedded systems engineer. Write complete ESP32-S3 Arduino firmware f
 
 | Field | Value |
 |-------|-------|
-| Device name | `NavVest` |
+| Device name | `VisionVest` |
 | Service UUID | `7B7E1000-7C6B-4B8F-9E2A-6B5F4F0A1000` |
 | Command Characteristic UUID | `7B7E1001-7C6B-4B8F-9E2A-6B5F4F0A1000` |
 | Characteristic properties | WRITE and WRITE WITHOUT RESPONSE |
