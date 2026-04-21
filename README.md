@@ -1,114 +1,355 @@
 # VisionVest
 
-VisionVest is a wearable assistive navigation system being built incrementally.
-The project is split so the iPhone handles perception and planning first, while
-the ESP32 handles execution and safety once the command pipeline is stable.
+VisionVest is a wearable assistive navigation system that combines **iPhone-based perception** with **ESP32-powered haptic feedback** to help users understand nearby space through touch.
 
-## Repository Structure
+Instead of relying only on spoken directions, VisionVest communicates with directional vibration cues around the body. The iPhone interprets the environment using the camera, motion sensors, voice input, gestures, and GPS, while the ESP32 executes those decisions in real time and provides local safety behavior through onboard ultrasonic sensing.
 
-- `ios-app/` contains the future iPhone application modules and app-specific docs.
-- `esp32-firmware/` contains the future ESP32 firmware project.
-- `docs/` contains architecture and implementation notes.
-- `protocol/` contains the shared command contract used across iPhone and ESP32.
-- `tests/` contains manual and automated validation artifacts.
-- `VisionVest/` contains the current Xcode project being migrated into this
-  milestone-based structure.
+## Why VisionVest
 
-## Current Milestone
+Many navigation tools for blind and low-vision users depend heavily on audio. Audio is useful, but it also competes with the real-world sounds people already rely on, like traffic, voices, footsteps, and crosswalk signals.
 
-Phase 0 focuses on repository structure and the initial shared command protocol.
-No BLE, ESP32 firmware, or hardware control is implemented in this milestone.
+VisionVest explores a different interaction model:
 
-## iOS App Structure
+- **Touch for guidance**
+- **Vision and sensing for perception**
+- **Wearable hardware for immediate feedback**
 
-The active Xcode app in `VisionVest/` is being revised to follow an incremental
-iPhone-first architecture:
+The result is a system that feels more physical, more intuitive, and less disruptive than constant spoken output.
 
-- `AppCoordinator` owns app-level shell state and will later coordinate camera,
-  perception, and transport modules.
-- `AppConfig` centralizes UI constants and shared copy.
-- `ContentView` stays focused on presentation and reads state from the
-  coordinator.
+## What The System Does
 
-## Camera Preview Module
+At a high level, VisionVest turns perception into directional haptics.
 
-The current camera milestone provides a live back-camera preview and a clean
-capture-session wrapper:
+The system supports:
 
-- `CameraManager` owns permissions, session configuration, and frame reception.
-- `CameraPreviewView` displays the live `AVCaptureSession` inside SwiftUI.
-- The frame delegate is active, but no Vision or Core ML inference runs yet.
+- **Awareness Mode**
+  Passive obstacle awareness with directional haptic alerts
+- **Find & Go**
+  Search for a chosen object, complete a 360 scan, then guide the user toward it
+- **Object Navigation**
+  Continue haptic guidance once a target is actively tracked
+- **GPS Navigation**
+  Provide directional guidance toward a saved destination
 
-## Frame Processing Skeleton
+At runtime, the flow looks like this:
 
-The current processing milestone adds a lightweight layer between capture and
-future inference:
+1. The iPhone captures live sensor data.
+2. The app detects objects, selects targets, and estimates relative direction.
+3. The phone sends compact BLE commands to the vest.
+4. The ESP32 interprets those commands and drives the correct motors.
+5. In awareness mode, the vest also uses onboard ultrasonic sensors for local obstacle alerts.
+6. A live dashboard mirrors the vest state over Wi-Fi for demos and debugging.
 
-- `CameraManager` receives every camera frame and samples them at a fixed rate.
-- `FrameProcessor` accepts sampled frame metadata through a placeholder callback.
-- The UI shows sampled frame count and latest processing timestamps for debug
-  visibility.
-- This keeps the capture layer separate from future Vision and Core ML logic.
+## System Architecture
 
-## Object Detection Model Loading
+### iPhone App
 
-The current detection milestone adds a dedicated model loader without running
-live inference yet:
+The iPhone is the perception and decision-making layer. It is responsible for:
 
-- `ObjectDetectionManager` searches the app bundle for a configured Core ML model.
-- If a compiled model is present, it initializes a `VNCoreMLModel`.
-- If no model is present, the app reports a clean failure state in the UI.
-- Camera capture remains separate from model loading so inference can be added
-  in the next milestone without rewriting the camera layer.
+- Live camera capture
+- Object detection and target selection
+- Direction estimation
+- 360-degree scan tracking for Find & Go
+- Hand-gesture mode switching
+- Voice-based target capture
+- GPS-based navigation cues
+- BLE packet generation and transmission
 
-## Live Detection Pipeline
+### ESP32 Firmware
 
-The current detection milestone connects sampled camera frames to Vision/Core ML:
+The ESP32 is the real-time execution and local safety layer. It is responsible for:
 
-- `CameraManager` continues to own capture and frame sampling only.
-- `FrameProcessor` forwards sampled frames to the detection layer.
-- `ObjectDetectionManager` runs `VNCoreMLRequest` on sampled frames and reports
-  detection counts plus the top result in the debug UI.
-- Inference is intentionally modest because it only runs on sampled frames, not
-  every camera frame.
+- Receiving BLE commands from the iPhone
+- Parsing the project's JSON command protocol
+- Managing haptic output modes and motor control
+- Running ultrasonic awareness sensing
+- Applying mode-specific behavior
+- Serving live telemetry over Wi-Fi for the dashboard
 
-## Detection Overlay Rendering
+### Dashboard
 
-The current overlay milestone adds a dedicated rendering layer on top of the
-camera preview:
+The dashboard is a React + Vite web app that connects to the ESP32's Wi-Fi telemetry endpoint. It is designed for:
 
-- `DetectionOverlayView` renders bounding boxes, labels, and confidence values.
-- `ObjectDetectionManager` publishes normalized overlay data from Vision results.
-- `ContentView` stacks the overlay above the live preview without mixing drawing
-  logic into the model or camera modules.
+- Judge demos
+- Live observability
+- Hardware debugging
+- Verifying mode transitions and output behavior
 
-## Primary Target Selection
+## Hardware Overview
 
-The current selection milestone adds a lightweight target selection layer:
+The wearable hardware is built around an **ESP32-S3** and includes:
 
-- `TargetSelector` chooses one primary target from the current detections.
-- The first implementation selects the highest-confidence detection and breaks
-  ties by larger bounding-box area.
-- The selected target is highlighted in the overlay and summarized in the UI.
+- Four directional DC vibration motors
+- Three ultrasonic sensors for back, left, and right awareness
+- A NeoPixel status indicator
+- BLE communication with the iPhone
+- Wi-Fi telemetry for the dashboard
 
-## Direction Estimation
+This split is intentional: the iPhone handles heavier perception and navigation logic, while the ESP32 handles fast hardware response and safety-critical local behavior.
 
-The current direction milestone converts the selected target into a coarse
-body-relative direction:
+## Software Overview
 
-- `DirectionEstimator` maps the selected target's horizontal midpoint into
-  `left`, `front`, or `right`.
-- The first implementation uses screen thirds for a simple, debuggable rule.
-- Direction output is summarized in the UI and debug panel without coupling it
-  to transport or haptic rendering yet.
+The active iPhone app lives in the `VisionVest/` Xcode source folder and `VisionVest.xcodeproj`.
 
-## Confidence Gating And Smoothing
+Important modules include:
 
-The current smoothing milestone reduces flicker in target-driven output:
+- `AppCoordinator.swift`
+  Manages app mode and high-level state
+- `ContentView.swift`
+  Main app UI and operator flow
+- `BLEVestManager.swift`
+  Handles BLE discovery, connection, and command sending
+- `VestMessage.swift`
+  Defines the outgoing BLE packet structure
+- `CameraManager.swift`
+  Owns camera capture and frame sampling
+- `FrameProcessor.swift`
+  Bridges camera frames into the perception pipeline
+- `ObjectDetectionManager.swift`
+  Runs detection and publishes navigation state
+- `TargetSelector.swift`
+  Chooses the active target
+- `DirectionEstimator.swift`
+  Converts target position into body-relative guidance
+- `DecisionSmoother.swift`
+  Reduces flicker in direction decisions
+- `MotionManager.swift`
+  Tracks 360-degree rotation for Find & Go
+- `GPSNavigationManager.swift`
+  Produces GPS guidance output
+- `HandGestureModeSwitchManager.swift`
+  Supports gesture-driven mode switching
+- `VoiceTargetInputManager.swift`
+  Captures the spoken Find & Go target
 
-- `DecisionSmoother` ignores low-confidence selections using centralized
-  thresholds in `AppConfig`.
-- It keeps a short direction history and only promotes a direction when enough
-  recent frames agree.
-- The UI shows both the raw direction estimate and the smoothed direction so
-  perception stability can be debugged explicitly.
+## Firmware Overview
+
+The active ESP32 firmware lives at:
+
+- [esp32-firmware/VisionVest/VisionVest.ino](./esp32-firmware/VisionVest/VisionVest.ino)
+
+The firmware currently supports:
+
+- BLE command reception
+- Mode switching through neutral entry packets
+- Full-power motor driving when active
+- Awareness-mode ultrasonic sensing
+- Find & Go scan-complete haptic event
+- Wi-Fi telemetry for the dashboard
+- Grouped telemetry state for `find_and_go`
+
+Supporting test sketches are included in:
+
+- `VisionVestBleConnectionTest/`
+- `VisionVestBlinkTest/`
+- `VisionVestIphoneOnly/`
+- `VisionVestMotorTest/`
+- `VisionVestUltrasonicTest/`
+
+## Modes
+
+### Awareness
+
+Used for passive obstacle awareness.
+
+- The vest can warn about nearby obstacles using left, right, and back ultrasonic sensors.
+- The phone can also provide awareness-style guidance from its perception stack.
+- Ultrasonic sensing is enabled only in this mode.
+
+### Find & Go
+
+Used for AI-assisted target search.
+
+Typical flow:
+
+1. The user enters Find & Go.
+2. The app sends a neutral `find_search` mode-entry packet.
+3. The user provides a target object.
+4. The app performs a 360-degree scan.
+5. The vest signals scan completion with a full buzz.
+6. The app transitions into directional search or object navigation.
+
+This is the most AI-heavy part of the project and the most important mode during demos.
+
+### Object Navigation
+
+Used once a target has been identified and the system is actively guiding the user toward it.
+
+- Directional cues are sent through BLE
+- Left and right cues map directly to turning guidance
+- The vest follows phone guidance rather than ultrasonic behavior
+
+### GPS Navigation
+
+Used for destination-based navigation.
+
+- The phone computes heading/location guidance
+- The vest renders that guidance as directional haptic cues
+- The BLE mode used by the firmware is `gps_nav`
+
+## BLE Command Protocol
+
+The phone sends one JSON packet per BLE write.
+
+Typical packet:
+
+```json
+{
+  "mode": "awareness",
+  "direction": "front",
+  "intensity": 180,
+  "pattern": "slow_pulse",
+  "priority": 2,
+  "ttlMs": 300,
+  "confidence": 0.82,
+  "distance": 1.6,
+  "seq": 14
+}
+```
+
+Key ideas in the protocol:
+
+- Every packet includes mode, direction, pattern, intensity, priority, TTL, confidence, distance, and sequence number
+- Neutral mode-entry packets are used so the ESP32 can switch behavior immediately
+- The firmware tolerates repeated identical packets for reliable mode switching
+- `gps_nav` is used instead of `gps`
+
+Detailed documentation:
+
+- [BLE_PACKET_FLOW.md](./BLE_PACKET_FLOW.md)
+- [esp32-packet-spec.md](./esp32-packet-spec.md)
+- [iphone-packet-handoff.md](./iphone-packet-handoff.md)
+
+## Dashboard
+
+The dashboard lives in `dashboard/` and reads telemetry from the ESP32 over Wi-Fi.
+
+It shows:
+
+- Current mode
+- Grouped `find_and_go` state
+- BLE connection status
+- Active haptic output
+- Motor zones
+- Ultrasonic hazard levels
+- Live mode transitions for demos
+
+This dashboard became one of the most valuable development tools in the project because it made the vest's internal state visible instead of forcing us to infer behavior from motor output alone.
+
+## Repository Layout
+
+```text
+.
+|-- BLE_PACKET_FLOW.md
+|-- VisionVest/                    # Active iPhone app source
+|-- VisionVest.xcodeproj/          # Xcode project
+|-- Ultralytics/                   # Detection integration utilities
+|-- esp32-firmware/
+|   `-- VisionVest/
+|       `-- VisionVest.ino         # Main ESP32 firmware
+|-- VisionVestBleConnectionTest/
+|-- VisionVestBlinkTest/
+|-- VisionVestIphoneOnly/
+|-- VisionVestMotorTest/
+|-- VisionVestUltrasonicTest/
+|-- dashboard/                     # Judge/demo telemetry dashboard
+|-- docs/
+|-- protocol/
+|-- tests/
+|-- esp32-packet-spec.md
+`-- iphone-packet-handoff.md
+```
+
+## Running The Project
+
+### iPhone App
+
+Requirements:
+
+- Xcode
+- Physical iPhone
+- Camera permission
+- Bluetooth permission
+- Microphone / speech permission
+- Motion access
+- Location access for GPS mode
+
+Open:
+
+- [VisionVest.xcodeproj](./VisionVest.xcodeproj)
+
+Then build and run the app on a real device.
+
+### ESP32 Firmware
+
+Flash:
+
+- [esp32-firmware/VisionVest/VisionVest.ino](./esp32-firmware/VisionVest/VisionVest.ino)
+
+The firmware is written for the ESP32 Arduino environment and depends on:
+
+- ArduinoJson
+- Adafruit NeoPixel
+- NimBLE-Arduino
+
+### Dashboard
+
+From `dashboard/`:
+
+```bash
+npm install
+npm run dev
+```
+
+For a production build:
+
+```bash
+npm run build
+```
+
+The default telemetry endpoint is:
+
+- `http://192.168.4.1/telemetry`
+
+## Current State
+
+What is already working in this repository:
+
+- Live camera preview
+- Object detection integration
+- Detection overlays
+- Target selection and direction estimation
+- BLE command generation and transmission
+- Find & Go flow with scan-complete signaling
+- GPS guidance scaffolding
+- ESP32 motor control and mode handling
+- Awareness-mode ultrasonic sensing
+- Wi-Fi telemetry dashboard
+
+What still benefits from continued refinement:
+
+- Detector tuning and dataset quality
+- End-to-end field testing
+- GPS route robustness
+- Additional user testing on haptic cue design
+- Final production polish across UI and hardware packaging
+
+## Why This Project Matters
+
+VisionVest is more than just an app and more than just a hardware prototype. It is a full-stack assistive system that combines:
+
+- embedded systems
+- mobile perception
+- BLE communication
+- real-time haptics
+- wearable interaction design
+
+We built it to explore a simple but important idea: navigation does not always need to be spoken. Sometimes the best interface is something you can feel.
+
+## Additional Documentation
+
+- [BLE_PACKET_FLOW.md](./BLE_PACKET_FLOW.md)
+- [docs/system-overview.md](./docs/system-overview.md)
+- [esp32-packet-spec.md](./esp32-packet-spec.md)
+- [iphone-packet-handoff.md](./iphone-packet-handoff.md)
+
