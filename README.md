@@ -353,3 +353,5 @@ We built it to explore a simple but important idea: navigation does not always n
 - [esp32-packet-spec.md](./esp32-packet-spec.md)
 - [iphone-packet-handoff.md](./iphone-packet-handoff.md)
 
+[![Devpost](https://img.shields.io/badge/Devpost-View_Project-blue)](https://devpost.com/software/visionvest)
+
